@@ -170,6 +170,29 @@ async def test_internal_call_checks_text_limit(ctx: Context) -> None:
     assert exc.value.code == "text_too_long"
 
 
+@pytest.mark.parametrize("completed", [False, True])
+async def test_internal_call_rejects_nul_without_changing_state(
+    ctx: Context, completed: bool
+) -> None:
+    if completed:
+        await ctx.service.submit_answers(1, valid())
+    previous_answers = list(ctx.surveys.answers)
+    previous_interests = {key: set(value) for key, value in ctx.interests.user_interests.items()}
+    answer = SurveyAnswer.model_construct(question_id=3, text_value="review\x00marker")
+    changed = [
+        SurveyAnswer(question_id=1, option_ids=[2]),
+        SurveyAnswer(question_id=2, option_ids=[4]),
+    ]
+
+    with pytest.raises(DomainValidationError) as exc:
+        await ctx.service.submit_answers(1, changed + [answer])
+
+    assert exc.value.code == "validation_error"
+    assert ctx.surveys.answers == previous_answers
+    assert ctx.interests.user_interests == previous_interests
+    assert ctx.users.items[1].survey_completed is completed
+
+
 async def test_text_boundary_and_repeated_identical_put(ctx: Context) -> None:
     answers = valid() + [SurveyAnswer(question_id=3, text_value="x" * 300)]
     await ctx.service.submit_answers(1, answers)

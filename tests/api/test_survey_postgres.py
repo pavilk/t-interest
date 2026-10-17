@@ -35,6 +35,91 @@ def headers(settings: Settings, user_id: int = 1) -> dict[str, str]:
 ANSWERS = [{"question_id": 1, "option_ids": [1]}, {"question_id": 2, "option_ids": [3]}]
 
 
+@pytest.mark.parametrize("completed", [False, True])
+async def test_nul_returns_422_and_preserves_saved_state(
+    pg_client: AsyncClient,
+    pg_data: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    completed: bool,
+) -> None:
+    auth = headers(settings)
+    if completed:
+        response = await pg_client.put(
+            "/api/v1/survey/answers",
+            headers=auth,
+            json=ANSWERS + [{"question_id": 3, "text_value": "previous text"}],
+        )
+        assert response.status_code == 200
+    async with pg_data() as session:
+        previous_answers = list(
+            (
+                await session.execute(
+                    select(
+                        UserAnswer.id,
+                        UserAnswer.question_id,
+                        UserAnswer.option_id,
+                        UserAnswer.text_value,
+                    ).order_by(UserAnswer.id)
+                )
+            ).all()
+        )
+        previous_interests = list(
+            (
+                await session.execute(
+                    select(UserInterest.user_id, UserInterest.interest_id).order_by(
+                        UserInterest.user_id, UserInterest.interest_id
+                    )
+                )
+            ).all()
+        )
+
+    response = await pg_client.put(
+        "/api/v1/survey/answers",
+        headers=auth,
+        json=[
+            {"question_id": 1, "option_ids": [2]},
+            {"question_id": 2, "option_ids": [4]},
+            {"question_id": 3, "text_value": "review\x00marker"},
+        ],
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert isinstance(body["error"]["message"], str)
+    assert "review" not in response.text and "marker" not in response.text
+    async with pg_data() as session:
+        assert (
+            list(
+                (
+                    await session.execute(
+                        select(
+                            UserAnswer.id,
+                            UserAnswer.question_id,
+                            UserAnswer.option_id,
+                            UserAnswer.text_value,
+                        ).order_by(UserAnswer.id)
+                    )
+                ).all()
+            )
+            == previous_answers
+        )
+        assert (
+            list(
+                (
+                    await session.execute(
+                        select(UserInterest.user_id, UserInterest.interest_id).order_by(
+                            UserInterest.user_id, UserInterest.interest_id
+                        )
+                    )
+                ).all()
+            )
+            == previous_interests
+        )
+        user = await session.get(User, 1)
+        assert user is not None and user.survey_completed is completed
+
+
 async def test_real_commit_resubmit_and_invalid_request_rollback(
     pg_client: AsyncClient,
     pg_data: async_sessionmaker[AsyncSession],

@@ -12,7 +12,7 @@ class SurveyAnswer(BaseModel):
 
     question_id: PositiveId
     option_ids: list[PositiveId] | None = None
-    text_value: str | None = Field(default=None, max_length=300)
+    text_value: str | None = Field(default=None, max_length=300, pattern=r"^[^\x00]*$")
 
 
 class AnswerOptionOut(BaseModel):

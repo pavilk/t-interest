@@ -23,3 +23,9 @@ def test_absent_and_empty_values_are_distinct() -> None:
     assert SurveyAnswer(question_id=1).option_ids is None
     assert SurveyAnswer(question_id=1, option_ids=[]).option_ids == []
     assert SurveyAnswer(question_id=1, text_value="").text_value == ""
+
+
+@pytest.mark.parametrize("value", ["\x00", "\x00text", "te\x00xt", "text\x00"])
+def test_text_with_nul_is_rejected(value: str) -> None:
+    with pytest.raises(ValidationError):
+        SurveyAnswer(question_id=3, text_value=value)

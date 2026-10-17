@@ -118,6 +118,10 @@ class SurveyService:
         if question.type == QuestionType.TEXT:
             if answer.option_ids is not None:
                 raise DomainValidationError("invalid_answer_type", "Для вопроса нужен текст")
+            if "\x00" in (answer.text_value or ""):
+                raise DomainValidationError(
+                    "validation_error", "Текст содержит недопустимый символ"
+                )
             if answer.text_value is not None and len(answer.text_value) > 300:
                 raise DomainValidationError(
                     "text_too_long", "Ответ не должен превышать 300 символов"
