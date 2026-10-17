@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from app.core.config import Settings
 from app.core.errors import (
     ConflictError,
@@ -83,6 +85,22 @@ class IdentityService:
 
     async def list_offices(self) -> list[OfficeOut]:
         return [OfficeOut.model_validate(o) for o in await self._offices.list_all()]
+
+    async def lock_for_survey(self, user_id: int) -> None:
+        if await self._users.get_by_id_for_update(user_id) is None:
+            raise NotFoundError("user_not_found", "Пользователь не найден")
+
+    async def mark_survey_completed(self, user_id: int) -> MeOut:
+        user = await self._get_user(user_id)
+        user.survey_completed = True
+        return await self.get_me(user_id)
+
+    async def get_locations(self, user_ids: Sequence[int]) -> dict[int, tuple[int, str]]:
+        if not user_ids:
+            return {}
+        users = await self._users.list_by_ids(user_ids)
+        offices = {office.id: office for office in await self._offices.list_all()}
+        return {user.id: (user.office_id, offices[user.office_id].city) for user in users}
 
     async def _get_user(self, user_id: int) -> User:
         user = await self._users.get_by_id(user_id)

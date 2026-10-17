@@ -13,11 +13,15 @@
 from collections.abc import Sequence
 from typing import Protocol
 
-from app.models import Office, User
+from app.models import AnswerOption, Interest, Office, Question, User, UserAnswer
 
 
 class UserRepository(Protocol):
     async def get_by_id(self, user_id: int) -> User | None: ...
+
+    async def get_by_id_for_update(self, user_id: int) -> User | None: ...
+
+    async def list_by_ids(self, user_ids: Sequence[int]) -> Sequence[User]: ...
 
     async def get_by_email(self, email: str) -> User | None: ...
 
@@ -30,5 +34,25 @@ class OfficeRepository(Protocol):
     async def list_all(self) -> Sequence[Office]: ...
 
 
-# TODO: SurveyRepository, InterestRepository, MatchRepository, GroupRepository, ChatRepository —
+class SurveyRepository(Protocol):
+    async def list_active_questions(self) -> Sequence[Question]: ...
+
+    async def list_options(self, question_ids: Sequence[int]) -> Sequence[AnswerOption]: ...
+
+    async def list_active_answers(self, user_id: int) -> Sequence[UserAnswer]: ...
+
+    async def replace_active_answers(
+        self, user_id: int, question_ids: Sequence[int], answers: Sequence[UserAnswer]
+    ) -> None: ...
+
+
+class InterestRepository(Protocol):
+    async def list_approved(self) -> Sequence[Interest]: ...
+
+    async def replace_user_interests(self, user_id: int, interest_ids: set[int]) -> None: ...
+
+    async def get_user_interest_ids(self, user_ids: Sequence[int]) -> dict[int, set[int]]: ...
+
+
+# TODO: MatchRepository, GroupRepository, ChatRepository —
 # по образцу выше. Методы выводи из контрактов в .claude/plans/backend-architecture/ARCHITECTURE.md.
