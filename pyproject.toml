@@ -30,12 +30,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "seeds*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = '-m "not postgres"'
+markers = ["postgres: requires a separate PostgreSQL 16 database via TEST_DATABASE_URL"]
 
 [tool.ruff]
 line-length = 100

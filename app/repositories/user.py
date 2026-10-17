@@ -16,7 +16,9 @@ class SqlUserRepository:
     async def get_by_id_for_update(self, user_id: int) -> User | None:
         # Refresh an object possibly loaded by authentication before waiting for the lock.
         return await self._session.scalar(
-            select(User).where(User.id == user_id).with_for_update()
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
             .execution_options(populate_existing=True)
         )
 
