@@ -45,8 +45,9 @@ class FakeOfficeRepository:
 
 
 class FakeSurveyRepository:
-    def __init__(self, questions: Sequence[Question] = (),
-                 options: Sequence[AnswerOption] = ()) -> None:
+    def __init__(
+        self, questions: Sequence[Question] = (), options: Sequence[AnswerOption] = ()
+    ) -> None:
         self.questions = list(questions)
         self.options = list(options)
         self.answers: list[UserAnswer] = []
@@ -55,17 +56,21 @@ class FakeSurveyRepository:
         return sorted((q for q in self.questions if q.is_active), key=lambda q: (q.order, q.id))
 
     async def list_options(self, question_ids: Sequence[int]) -> Sequence[AnswerOption]:
-        return sorted((o for o in self.options if o.question_id in question_ids),
-                      key=lambda o: (o.order, o.id))
+        return sorted(
+            (o for o in self.options if o.question_id in question_ids),
+            key=lambda o: (o.order, o.id),
+        )
 
     async def list_active_answers(self, user_id: int) -> Sequence[UserAnswer]:
         active = {q.id for q in self.questions if q.is_active}
         return [a for a in self.answers if a.user_id == user_id and a.question_id in active]
 
-    async def replace_active_answers(self, user_id: int, question_ids: Sequence[int],
-                                     answers: Sequence[UserAnswer]) -> None:
-        self.answers = [a for a in self.answers
-                        if a.user_id != user_id or a.question_id not in question_ids]
+    async def replace_active_answers(
+        self, user_id: int, question_ids: Sequence[int], answers: Sequence[UserAnswer]
+    ) -> None:
+        self.answers = [
+            a for a in self.answers if a.user_id != user_id or a.question_id not in question_ids
+        ]
         self.answers.extend(answers)
 
 
@@ -75,12 +80,18 @@ class FakeInterestRepository:
         self.user_interests: dict[int, set[int]] = {}
 
     async def list_approved(self) -> Sequence[Interest]:
-        return sorted((i for i in self.items.values() if i.is_approved),
-                      key=lambda i: (i.name, i.id))
+        return sorted(
+            (i for i in self.items.values() if i.is_approved), key=lambda i: (i.name, i.id)
+        )
 
     async def replace_user_interests(self, user_id: int, interest_ids: set[int]) -> None:
         self.user_interests[user_id] = set(interest_ids)
 
     async def get_user_interest_ids(self, user_ids: Sequence[int]) -> dict[int, set[int]]:
-        approved = {i.id for i in await self.list_approved() if i.parent_id is not None}
+        visible = {i.id: i for i in await self.list_approved()}
+        approved = {
+            i.id
+            for i in visible.values()
+            if i.parent_id in visible and visible[i.parent_id].parent_id is None
+        }
         return {u: self.user_interests.get(u, set()) & approved for u in user_ids}

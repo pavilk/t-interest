@@ -39,6 +39,11 @@ async def _domain_error_handler(request: Request, exc: Exception) -> JSONRespons
 
 async def _validation_error_handler(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
+    if request.method == "PUT" and request.url.path == "/api/v1/survey/answers":
+        if any(
+            e["type"] == "string_too_long" and e["loc"][-1] == "text_value" for e in exc.errors()
+        ):
+            return _error(422, "text_too_long", "Ответ не должен превышать 300 символов")
     # без поля "input": там может оказаться пароль или другие персональные данные
     fields = [{"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]} for e in exc.errors()]
     return _error(422, "validation_error", "Некорректные данные запроса", fields=fields)

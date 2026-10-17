@@ -16,10 +16,18 @@ from app.core.db import get_session
 from app.core.errors import ForbiddenError, UnauthorizedError
 from app.core.security import decode_token
 from app.models import User
-from app.repositories.interfaces import OfficeRepository, UserRepository
+from app.repositories.interest import SqlInterestRepository
+from app.repositories.interfaces import (
+    InterestRepository,
+    OfficeRepository,
+    SurveyRepository,
+    UserRepository,
+)
 from app.repositories.office import SqlOfficeRepository
+from app.repositories.survey import SqlSurveyRepository
 from app.repositories.user import SqlUserRepository
 from app.services.identity import IdentityService
+from app.services.survey import SurveyService
 
 # scope="function": commit в get_session выполняется до отправки ответа, а не после
 SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
@@ -51,6 +59,27 @@ def get_identity_service(
 
 
 IdentityServiceDep = Annotated[IdentityService, Depends(get_identity_service)]
+
+
+def get_survey_repository(session: SessionDep) -> SurveyRepository:
+    return SqlSurveyRepository(session)
+
+
+def get_interest_repository(session: SessionDep) -> InterestRepository:
+    return SqlInterestRepository(session)
+
+
+SurveyRepositoryDep = Annotated[SurveyRepository, Depends(get_survey_repository)]
+InterestRepositoryDep = Annotated[InterestRepository, Depends(get_interest_repository)]
+
+
+def get_survey_service(
+    surveys: SurveyRepositoryDep, interests: InterestRepositoryDep, identity: IdentityServiceDep
+) -> SurveyService:
+    return SurveyService(surveys, interests, identity)
+
+
+SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 
 
 # --- текущий пользователь ---

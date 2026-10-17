@@ -4,8 +4,10 @@ from pydantic import ValidationError
 from app.schemas.survey import SurveyAnswer
 
 
-@pytest.mark.parametrize("data", [{"question_id": 0}, {"question_id": 1, "option_ids": [-1]},
-                                  {"question_id": 1, "user_id": 9}])
+@pytest.mark.parametrize(
+    "data",
+    [{"question_id": 0}, {"question_id": 1, "option_ids": [-1]}, {"question_id": 1, "user_id": 9}],
+)
 def test_invalid_ids_and_extra_fields(data: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         SurveyAnswer.model_validate(data)

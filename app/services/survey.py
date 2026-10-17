@@ -17,8 +17,9 @@ from app.services.identity import IdentityService
 
 
 class SurveyService:
-    def __init__(self, surveys: SurveyRepository, interests: InterestRepository,
-                 identity: IdentityService) -> None:
+    def __init__(
+        self, surveys: SurveyRepository, interests: InterestRepository, identity: IdentityService
+    ) -> None:
         self._surveys = surveys
         self._interests = interests
         self._identity = identity
@@ -29,16 +30,19 @@ class SurveyService:
         by_question: dict[int, list[AnswerOptionOut]] = defaultdict(list)
         for option in sorted(options, key=lambda o: (o.order, o.id)):
             by_question[option.question_id].append(AnswerOptionOut.model_validate(option))
-        return [QuestionOut(id=q.id, text=q.text, type=q.type, order=q.order,
-                            options=by_question[q.id])
-                for q in sorted(questions, key=lambda q: (q.order, q.id))]
+        return [
+            QuestionOut(id=q.id, text=q.text, type=q.type, order=q.order, options=by_question[q.id])
+            for q in sorted(questions, key=lambda q: (q.order, q.id))
+        ]
 
     async def get_answers(self, user_id: int) -> list[SurveyAnswer]:
         questions = await self._surveys.list_active_questions()
         rows = await self._surveys.list_active_answers(user_id)
         by_question: dict[int, SurveyAnswer] = {}
         for row in rows:
-            answer = by_question.setdefault(row.question_id, SurveyAnswer(question_id=row.question_id))
+            answer = by_question.setdefault(
+                row.question_id, SurveyAnswer(question_id=row.question_id)
+            )
             if row.option_id is not None:
                 if answer.option_ids is None:
                     answer.option_ids = []
@@ -48,8 +52,11 @@ class SurveyService:
         for answer in by_question.values():
             if answer.option_ids is not None:
                 answer.option_ids.sort()
-        return [by_question[q.id] for q in sorted(questions, key=lambda q: (q.order, q.id))
-                if q.id in by_question]
+        return [
+            by_question[q.id]
+            for q in sorted(questions, key=lambda q: (q.order, q.id))
+            if q.id in by_question
+        ]
 
     async def submit_answers(self, user_id: int, answers: list[SurveyAnswer]) -> MeOut:
         await self._identity.lock_for_survey(user_id)
@@ -58,8 +65,11 @@ class SurveyService:
             raise ConflictError("survey_not_configured", "Анкета пока не настроена")
         options = {o.id: o for o in await self._surveys.list_options(list(questions))}
         approved = {i.id: i for i in await self._interests.list_approved()}
-        leaves = {i.id for i in approved.values()
-                  if i.parent_id in approved and approved[i.parent_id].parent_id is None}
+        leaves = {
+            i.id
+            for i in approved.values()
+            if i.parent_id in approved and approved[i.parent_id].parent_id is None
+        }
         rows: list[UserAnswer] = []
         interest_ids: set[int] = set()
         seen: set[int] = set()
@@ -76,25 +86,42 @@ class SurveyService:
                     if option.interest_id not in leaves:
                         raise ConflictError("survey_not_configured", "Анкета пока не настроена")
                     interest_ids.add(option.interest_id)
-                rows.append(UserAnswer(user_id=user_id, question_id=question.id,
-                                       option_id=option.id, text_value=None))
+                rows.append(
+                    UserAnswer(
+                        user_id=user_id,
+                        question_id=question.id,
+                        option_id=option.id,
+                        text_value=None,
+                    )
+                )
             if question.type == QuestionType.TEXT:
-                rows.append(UserAnswer(user_id=user_id, question_id=question.id,
-                                       option_id=None, text_value=(answer.text_value or "").strip()))
+                rows.append(
+                    UserAnswer(
+                        user_id=user_id,
+                        question_id=question.id,
+                        option_id=None,
+                        text_value=(answer.text_value or "").strip(),
+                    )
+                )
         if any(q.id not in seen and q.type != QuestionType.TEXT for q in questions.values()):
-            raise DomainValidationError("required_question_missing", "Ответьте на обязательные вопросы")
+            raise DomainValidationError(
+                "required_question_missing", "Ответьте на обязательные вопросы"
+            )
         await self._surveys.replace_active_answers(user_id, list(questions), rows)
         await self._interests.replace_user_interests(user_id, interest_ids)
         return await self._identity.mark_survey_completed(user_id)
 
     @staticmethod
-    def _validate_answer(question: Question, answer: SurveyAnswer,
-                         options: dict[int, AnswerOption]) -> list[AnswerOption]:
+    def _validate_answer(
+        question: Question, answer: SurveyAnswer, options: dict[int, AnswerOption]
+    ) -> list[AnswerOption]:
         if question.type == QuestionType.TEXT:
             if answer.option_ids is not None:
                 raise DomainValidationError("invalid_answer_type", "Для вопроса нужен текст")
             if answer.text_value is not None and len(answer.text_value) > 300:
-                raise DomainValidationError("text_too_long", "Ответ не должен превышать 300 символов")
+                raise DomainValidationError(
+                    "text_too_long", "Ответ не должен превышать 300 символов"
+                )
             if not (answer.text_value or "").strip():
                 raise DomainValidationError("empty_text", "Текст ответа не должен быть пустым")
             return []
@@ -113,16 +140,26 @@ class SurveyService:
 
     async def list_interests(self) -> list[InterestDirectionOut]:
         interests = sorted(await self._interests.list_approved(), key=lambda i: (i.name, i.id))
-        return [InterestDirectionOut(id=root.id, name=root.name,
-                                    children=[InterestOut.model_validate(i) for i in interests
-                                              if i.parent_id == root.id])
-                for root in interests if root.parent_id is None]
+        return [
+            InterestDirectionOut(
+                id=root.id,
+                name=root.name,
+                children=[
+                    InterestOut.model_validate(i) for i in interests if i.parent_id == root.id
+                ],
+            )
+            for root in interests
+            if root.parent_id is None
+        ]
 
     async def get_matching_profile(self, user_ids: Sequence[int]) -> dict[int, MatchingProfile]:
         if not user_ids:
             return {}
         locations = await self._identity.get_locations(user_ids)
         interests = await self._interests.get_user_interest_ids(list(locations))
-        return {user_id: MatchingProfile(interest_ids=interests.get(user_id, set()),
-                                        office_id=office_id, city=city)
-                for user_id, (office_id, city) in locations.items()}
+        return {
+            user_id: MatchingProfile(
+                interest_ids=interests.get(user_id, set()), office_id=office_id, city=city
+            )
+            for user_id, (office_id, city) in locations.items()
+        }

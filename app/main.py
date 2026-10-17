@@ -1,6 +1,6 @@
 from fastapi import APIRouter, FastAPI
 
-from app.api import auth, me
+from app.api import auth, me, survey
 from app.api.errors import register_error_handlers
 
 
@@ -11,7 +11,8 @@ def create_app() -> FastAPI:
     api = APIRouter(prefix="/api/v1")
     api.include_router(auth.router)
     api.include_router(me.router)
-    # TODO: survey, matching, groups, chats, search — подключать сюда же
+    api.include_router(survey.router)
+    # TODO: matching, groups, chats, search — подключать сюда же
     app.include_router(api)
 
     @app.get("/health", tags=["health"])

@@ -4,7 +4,16 @@ import pytest
 
 from app.core.config import Settings
 from app.core.errors import ConflictError, DomainValidationError, NotFoundError
-from app.models import AnswerOption, Interest, Office, Question, QuestionType, User, UserAnswer, UserRole
+from app.models import (
+    AnswerOption,
+    Interest,
+    Office,
+    Question,
+    QuestionType,
+    User,
+    UserAnswer,
+    UserRole,
+)
 from app.schemas.survey import SurveyAnswer
 from app.services.identity import IdentityService
 from app.services.survey import SurveyService
@@ -27,10 +36,26 @@ class Context:
 @pytest.fixture
 async def ctx(settings: Settings) -> Context:
     users = FakeUserRepository()
-    await users.add(User(email="test@example.com", name="Test", office_id=1,
-                         password_hash="unused", survey_completed=False, role=UserRole.USER))
-    await users.add(User(email="other@example.com", name="Other", office_id=1,
-                         password_hash="unused", survey_completed=False, role=UserRole.USER))
+    await users.add(
+        User(
+            email="test@example.com",
+            name="Test",
+            office_id=1,
+            password_hash="unused",
+            survey_completed=False,
+            role=UserRole.USER,
+        )
+    )
+    await users.add(
+        User(
+            email="other@example.com",
+            name="Other",
+            office_id=1,
+            password_hash="unused",
+            survey_completed=False,
+            role=UserRole.USER,
+        )
+    )
     offices = FakeOfficeRepository([Office(id=1, city="Тестовый город", name="Офис")])
     surveys = FakeSurveyRepository(
         questions=[
@@ -46,24 +71,33 @@ async def ctx(settings: Settings) -> Context:
             AnswerOption(id=4, question_id=2, text="D", order=2, interest_id=None),
         ],
     )
-    interests = FakeInterestRepository([
-        Interest(id=10, name="Спорт", parent_id=None, is_approved=True),
-        Interest(id=11, name="Бег", parent_id=10, is_approved=True),
-        Interest(id=12, name="Плавание", parent_id=10, is_approved=True),
-        Interest(id=13, name="Скрытый", parent_id=10, is_approved=False),
-    ])
-    return Context(SurveyService(surveys, interests, IdentityService(users, offices, settings)),
-                   surveys, interests, users)
+    interests = FakeInterestRepository(
+        [
+            Interest(id=10, name="Спорт", parent_id=None, is_approved=True),
+            Interest(id=11, name="Бег", parent_id=10, is_approved=True),
+            Interest(id=12, name="Плавание", parent_id=10, is_approved=True),
+            Interest(id=13, name="Скрытый", parent_id=10, is_approved=False),
+        ]
+    )
+    return Context(
+        SurveyService(surveys, interests, IdentityService(users, offices, settings)),
+        surveys,
+        interests,
+        users,
+    )
 
 
 def valid() -> list[SurveyAnswer]:
-    return [SurveyAnswer(question_id=1, option_ids=[1]),
-            SurveyAnswer(question_id=2, option_ids=[3, 4])]
+    return [
+        SurveyAnswer(question_id=1, option_ids=[1]),
+        SurveyAnswer(question_id=2, option_ids=[3, 4]),
+    ]
 
 
 async def test_submit_replaces_answers_interests_and_completes(ctx: Context) -> None:
-    result = await ctx.service.submit_answers(1, valid() + [
-        SurveyAnswer(question_id=3, text_value="  Другое  ")])
+    result = await ctx.service.submit_answers(
+        1, valid() + [SurveyAnswer(question_id=3, text_value="  Другое  ")]
+    )
     assert result.survey_completed is True
     assert ctx.interests.user_interests[1] == {11}
     assert len(ctx.surveys.answers) == 4
@@ -76,8 +110,10 @@ async def test_resubmit_preserves_archive_and_other_users(ctx: Context) -> None:
     other = UserAnswer(user_id=2, question_id=1, option_id=1, text_value=None)
     ctx.surveys.answers.extend([archive, other])
     ctx.interests.user_interests[2] = {11}
-    await ctx.service.submit_answers(1, [SurveyAnswer(question_id=1, option_ids=[2]),
-                                         SurveyAnswer(question_id=2, option_ids=[4])])
+    await ctx.service.submit_answers(
+        1,
+        [SurveyAnswer(question_id=1, option_ids=[2]), SurveyAnswer(question_id=2, option_ids=[4])],
+    )
     assert ctx.interests.user_interests == {1: {12}, 2: {11}}
     assert archive in ctx.surveys.answers and other in ctx.surveys.answers
     assert len(ctx.surveys.answers) == 4
@@ -86,22 +122,26 @@ async def test_resubmit_preserves_archive_and_other_users(ctx: Context) -> None:
     assert answers[0].option_ids == [2]
 
 
-@pytest.mark.parametrize(("replacement", "code"), [
-    ([SurveyAnswer(question_id=99, option_ids=[1])], "unknown_question"),
-    ([SurveyAnswer(question_id=4, option_ids=[1])], "unknown_question"),
-    ([SurveyAnswer(question_id=1, option_ids=[3])], "option_not_in_question"),
-    ([SurveyAnswer(question_id=1, option_ids=[999])], "option_not_in_question"),
-    ([SurveyAnswer(question_id=1, option_ids=[])], "single_choice_violation"),
-    ([SurveyAnswer(question_id=1, option_ids=[1, 2])], "single_choice_violation"),
-    ([SurveyAnswer(question_id=2, option_ids=[])], "multi_choice_violation"),
-    ([SurveyAnswer(question_id=2, option_ids=[3, 3])], "duplicate_option"),
-    ([SurveyAnswer(question_id=1, option_ids=[1], text_value="mixed")], "invalid_answer_type"),
-    ([SurveyAnswer(question_id=3, option_ids=[1], text_value="mixed")], "invalid_answer_type"),
-    ([SurveyAnswer(question_id=3, text_value="   ")], "empty_text"),
-    ([SurveyAnswer(question_id=3)], "empty_text"),
-])
-async def test_validation_does_not_write(ctx: Context, replacement: list[SurveyAnswer],
-                                        code: str) -> None:
+@pytest.mark.parametrize(
+    ("replacement", "code"),
+    [
+        ([SurveyAnswer(question_id=99, option_ids=[1])], "unknown_question"),
+        ([SurveyAnswer(question_id=4, option_ids=[1])], "unknown_question"),
+        ([SurveyAnswer(question_id=1, option_ids=[3])], "option_not_in_question"),
+        ([SurveyAnswer(question_id=1, option_ids=[999])], "option_not_in_question"),
+        ([SurveyAnswer(question_id=1, option_ids=[])], "single_choice_violation"),
+        ([SurveyAnswer(question_id=1, option_ids=[1, 2])], "single_choice_violation"),
+        ([SurveyAnswer(question_id=2, option_ids=[])], "multi_choice_violation"),
+        ([SurveyAnswer(question_id=2, option_ids=[3, 3])], "duplicate_option"),
+        ([SurveyAnswer(question_id=1, option_ids=[1], text_value="mixed")], "invalid_answer_type"),
+        ([SurveyAnswer(question_id=3, option_ids=[1], text_value="mixed")], "invalid_answer_type"),
+        ([SurveyAnswer(question_id=3, text_value="   ")], "empty_text"),
+        ([SurveyAnswer(question_id=3)], "empty_text"),
+    ],
+)
+async def test_validation_does_not_write(
+    ctx: Context, replacement: list[SurveyAnswer], code: str
+) -> None:
     answers = [a for a in valid() if a.question_id != replacement[0].question_id] + replacement
     with pytest.raises(DomainValidationError) as exc:
         await ctx.service.submit_answers(1, answers)
