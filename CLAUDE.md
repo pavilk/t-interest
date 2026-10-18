@@ -42,11 +42,15 @@
 docker compose up -d postgres        # поднять БД
 alembic upgrade head                 # применить миграции
 alembic revision --autogenerate -m "..."  # новая миграция (проверь сгенерированный файл руками)
+alembic downgrade -1                 # откатить последнюю миграцию
+alembic check                        # модели и миграции совпадают (перед PR)
 uvicorn app.main:app --reload        # запустить API локально
 pytest                               # все тесты
 ruff check . && ruff format .        # линт и формат
 mypy                                 # проверка типов
 ```
+
+Миграции берут `DATABASE_URL` из окружения, иначе из `.env`. Меняешь модели — в том же PR делай миграцию поверх текущей головы (`alembic heads` должен показывать одну).
 
 ## Структура репозитория
 
