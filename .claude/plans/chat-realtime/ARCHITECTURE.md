@@ -1,8 +1,8 @@
 ---
 plan_type: architecture
-version: 3
+version: 4
 status: current
-content_sha256: d97fa0812ae5588a3de8017c6091cebd5073cc187f9eb96b8f65d53ae5b3b6d0
+content_sha256: de7d1553c73537cc5abe284e6817dc2f1cdb28393c61d69a4c3ff4324fce76fa
 ---
 # Чаты и реалтайм — Architecture
 
@@ -403,3 +403,22 @@ async def chat_ws(websocket: WebSocket, units: ChatUnitFactoryDep, settings: Set
 7. **Интеграция и демо:** проверить внутренний контракт для matching и groups, сид демо-чатов, ручная проверка двумя вкладками.
 
 Зависимости: 1 → 3; 2 → 4; 3 + 4 → 5 → 6. Фазы 1 и 2 независимы, поэтому их могут параллельно делать разные люди. Фаза 6 начинается после подтверждения способа auth с вебом.
+
+## Реализация: отклонения от версии 3
+
+Фазы 1–6 реализованы в `feature/chat-websocket`. Где код разошёлся с документом выше, верен код; причины ниже.
+
+| Было в документе | Стало в коде | Почему |
+|---|---|---|
+| Outbox на хуках `after_commit` / `after_rollback` SQLAlchemy | `session_scope` публикует события сразу после `await session.commit()` и выбрасывает их при исключении | Тест на PostgreSQL показал: `after_commit` срабатывает и на выходе из savepoint, события ушли бы до настоящего commit. `session_scope` и так единственное место commit, хуки не нужны |
+| `ChatService.send_message` без блокировки | `ChatRepository.lock_chat` (`SELECT … FOR UPDATE` строки чата) перед вставкой | Иначе параллельные коммиты в один чат становятся видимыми не в порядке `id`, и догрузка по `after_id` навсегда пропускает сообщение (риск из таблицы Risks закрыт) |
+| Повтор `client_msg_id` ищется без `chat_id` | Совпадение в другом чате → `409 client_msg_id_reused` (в WS — `error client_msg_id_reused`) | Без проверки клиент получал `ack` с сообщением из чужого чата |
+| Истёкший access-токен не разрывает соединение | Соединение закрывается кодом `4401` в момент `exp` токена | Иначе с пингами раз в 25 с сокет живёт бесконечно, и удалённый пользователь сохраняет доступ |
+| Лимит фрейма 16 KB закрывает `1009` из приложения | Основной лимит — `uvicorn --ws-max-size 16384`; проверка в `api/ws.py` — страховка | Starlette читает фрейм целиком до того, как приложение может его отклонить |
+| `get_or_create_direct -> tuple[Chat, bool]`, `add_group_chat`, `get_by_group` | `-> tuple[int, bool]`, `get_or_create_group_chat`, `get_group_chat_id` | Сервису нужен только `id` |
+| `list_messages -> Sequence[MessageView]`, `limit + 1` в сервисе | `-> tuple[items, has_more]` | Направление «лишней» строки знает только репозиторий |
+| `advance_read -> None` | `-> int` (итоговый указатель), он же уходит в `ReadUpdated` | Вкладки синхронизируются по реальному значению, а не по запрошенному |
+| Auth WS проверяет `ChatUnitFactory` сам | `IdentityService.authenticate_for_chat(token) -> AuthenticatedUser(user_id, expires_at)` | Логика identity остаётся в identity и переиспользуется фейками |
+| Тесты репозитория: транзакция на тест с откатом | `TRUNCATE … RESTART IDENTITY` перед каждым тестом | Тесты гонок и outbox коммитят в нескольких сессиях |
+
+Способ передачи JWT в WS (первый фрейм `auth`) по-прежнему нужно подтвердить с вебом. Он изолирован в `_authenticate` в `api/ws.py`.

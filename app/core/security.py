@@ -31,6 +31,14 @@ def create_token(user_id: int, token_type: TokenType, settings: Settings) -> str
 
 def decode_token(token: str, expected_type: TokenType, settings: Settings) -> int:
     """Возвращает id пользователя или бросает UnauthorizedError."""
+    user_id, _ = decode_token_claims(token, expected_type, settings)
+    return user_id
+
+
+def decode_token_claims(
+    token: str, expected_type: TokenType, settings: Settings
+) -> tuple[int, datetime]:
+    """(id пользователя, момент истечения токена) или UnauthorizedError."""
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     except jwt.PyJWTError as exc:
@@ -38,6 +46,6 @@ def decode_token(token: str, expected_type: TokenType, settings: Settings) -> in
     if payload.get("type") != expected_type:
         raise UnauthorizedError("invalid_token", "Токен недействителен")
     try:
-        return int(payload["sub"])
-    except (KeyError, ValueError) as exc:
+        return int(payload["sub"]), datetime.fromtimestamp(payload["exp"], UTC)
+    except (KeyError, ValueError, TypeError) as exc:
         raise UnauthorizedError("invalid_token", "Токен недействителен") from exc

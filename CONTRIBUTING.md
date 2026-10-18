@@ -20,8 +20,8 @@ mypy
 | Файл | Что внутри |
 |---|---|
 | `app/core/config.py` | настройки из `.env` |
-| `app/core/db.py` | `get_session`: одна сессия на запрос, **единственное место с `commit`** |
-| `app/core/errors.py` | доменные ошибки: `NotFoundError`, `ForbiddenError`, `ConflictError`, `DomainValidationError`, `UnauthorizedError` |
+| `app/core/db.py` | `session_scope` / `get_session`: одна сессия на запрос (в WS — на фрейм), **единственное место с `commit`**; outbox событий, которые уходят только после commit |
+| `app/core/errors.py` | доменные ошибки: `NotFoundError`, `ForbiddenError`, `ConflictError`, `DomainValidationError`, `UnauthorizedError`, `RateLimitedError` |
 | `app/core/security.py` | хэш паролей (argon2), JWT |
 | `app/models/` | **все** таблицы проекта, менять только вместе с CLAUDE.md |
 | `app/repositories/interfaces.py` | интерфейсы репозиториев (Protocol) |
@@ -35,9 +35,12 @@ mypy
 | `tests/fakes/repositories.py` | фейковые репозитории в памяти |
 | `tests/unit/test_identity_service.py` | образец тестов сервиса |
 | `tests/api/test_identity_api.py` | образец тестов ручек (на фейках, без БД) |
+| **chat** — готов | `repositories/chat.py`, `services/chat.py`, `api/chats.py` (REST), `api/ws.py` + `api/connections.py` (WebSocket). Для matching и groups: `ChatService.ensure_direct_chat`, `create_group_chat`, `add_group_member`, `remove_group_member` в той же сессии запроса |
+| `tests/repositories/` | тесты на настоящей PostgreSQL, нужен `TEST_DATABASE_URL` (см. CLAUDE.md) |
 
-Миграций пока нет, это следующий этап. Документация ручек: запусти
-`uvicorn app.main:app --reload` и открой http://localhost:8000/docs.
+Миграции — в `alembic/` (команды в CLAUDE.md). Документация ручек: запусти
+`uvicorn app.main:app --reload` и открой http://localhost:8000/docs. Фреймы WebSocket
+описаны в `/openapi.json` как `ClientFrame` и `ServerFrame`.
 
 ## Как добавить модуль: 7 шагов
 
@@ -118,7 +121,6 @@ SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 | Модуль | Репозиторий | Сервис и главные правила | Раздел ARCHITECTURE.md |
 |---|---|---|---|
 | **survey** | `SurveyRepository`: активные вопросы, варианты, замена ответов. `InterestRepository`: дерево интересов, замена интересов пользователя | `SurveyService`: `get_survey`, `get_answers`, `submit_answers` (валидация single/multi/text, обязательные вопросы, пересчёт `user_interests` из `answer_options.interest_id`, `survey_completed = True`), `get_matching_profile(user_ids)` | Contracts → survey |
-| **chat** | `ChatRepository`: `get_direct_by_key`, `add_chat`, `add_member`, `is_member`, `list_user_chats`, `add_message`, `list_messages(before_id, limit)`, `mark_read` | `ChatService`: `ensure_direct_chat(a, b)` (ключ `"<min>:<max>"`, идемпотентно), `create_group_chat`, `send_message` (проверка членства, текст 1..4000), `list_chats` с unread | Contracts → chat |
 | **matching** | `MatchRepository`: `get_pair(a, b)`, `add`, `excluded_user_ids(user_id)` | `services/matching.py`: **чистые функции** `jaccard`, `score` + `MatchingService`: `recommend_people`, `like`, `decline`. Пара всегда `user_a_id < user_b_id` | Contracts → matching, Decisions 4–5 |
 | **groups** | `GroupRepository`: `get`, `get_active_by_interest`, `add`, `list_pending`, `add_member`, `is_member`, `recommend_for_interests` | `GroupService`: `create_request`, `approve`/`reject` (только moderator/admin), `join`, `leave` | Contracts → groups |
 | **search** | `SearchRepository`: `ILIKE` по людям и одобренным группам | `SearchService`: строка ≥ 2 символов, limit 20 | Data flow → 6 |

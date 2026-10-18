@@ -5,7 +5,9 @@
 тогда база не нужна. Новый модуль добавляет сюда свои `get_*_repository` и `get_*_service`.
 """
 
-from typing import Annotated
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Annotated, Protocol
 
 from fastapi import Depends
 from fastapi.requests import HTTPConnection
@@ -13,7 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.db import get_outbox, get_session
+from app.core.db import EventPublisher, get_event_publisher, get_outbox, get_session, session_scope
 from app.core.errors import ForbiddenError, UnauthorizedError
 from app.core.rate_limit import RateLimiter, TokenBucketLimiter
 from app.core.security import decode_token
@@ -23,7 +25,7 @@ from app.repositories.interfaces import ChatRepository, OfficeRepository, UserRe
 from app.repositories.office import SqlOfficeRepository
 from app.repositories.user import SqlUserRepository
 from app.services.chat import ChatService
-from app.services.identity import IdentityService
+from app.services.identity import AuthenticatedUser, IdentityService
 from app.services.notifier import ChatEventSink
 
 # scope="function": commit в get_session выполняется до отправки ответа, а не после
@@ -120,3 +122,47 @@ async def require_survey_completed(user: CurrentUser) -> User:
 
 
 SurveyCompletedUser = Annotated[User, Depends(require_survey_completed)]
+
+
+# --- WebSocket: сессия на каждый фрейм, а не на соединение ---
+
+
+class ChatUnits(Protocol):
+    """То, что нужно WS-эндпоинту. В API-тестах подменяется версией на фейках."""
+
+    async def authenticate(self, access_token: str) -> AuthenticatedUser: ...
+
+    def chat_service(self) -> AbstractAsyncContextManager[ChatService]: ...
+
+
+class ChatUnitFactory:
+    """Собирает сервисы на короткую сессию. Не зависит от SessionDep: соединение живёт долго."""
+
+    def __init__(
+        self, settings: Settings, publisher: EventPublisher | None, limiter: RateLimiter
+    ) -> None:
+        self._settings = settings
+        self._publisher = publisher
+        self._limiter = limiter
+
+    async def authenticate(self, access_token: str) -> AuthenticatedUser:
+        async with session_scope() as session:
+            service = IdentityService(
+                SqlUserRepository(session), SqlOfficeRepository(session), self._settings
+            )
+            return await service.authenticate_for_chat(access_token)
+
+    @asynccontextmanager
+    async def chat_service(self) -> AsyncIterator[ChatService]:
+        """На выходе — commit, затем события уходят в WS-соединения."""
+        async with session_scope(self._publisher) as session:
+            yield ChatService(SqlChatRepository(session), get_outbox(session), self._limiter)
+
+
+def get_chat_units(
+    conn: HTTPConnection, settings: SettingsDep, limiter: RateLimiterDep
+) -> ChatUnits:
+    return ChatUnitFactory(settings, get_event_publisher(conn), limiter)
+
+
+ChatUnitsDep = Annotated[ChatUnits, Depends(get_chat_units)]

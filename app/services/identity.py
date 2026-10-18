@@ -1,11 +1,21 @@
+from dataclasses import dataclass
+from datetime import datetime
+
 from app.core.config import Settings
 from app.core.errors import (
     ConflictError,
     DomainValidationError,
+    ForbiddenError,
     NotFoundError,
     UnauthorizedError,
 )
-from app.core.security import create_token, decode_token, hash_password, verify_password
+from app.core.security import (
+    create_token,
+    decode_token,
+    decode_token_claims,
+    hash_password,
+    verify_password,
+)
 from app.models import Office, User, UserRole
 from app.repositories.interfaces import OfficeRepository, UserRepository
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenPair
@@ -14,6 +24,12 @@ from app.schemas.user import MeOut, OfficeOut, UpdateMeRequest
 # Хэш для сравнения, когда пользователя нет: вход по несуществующему email
 # занимает столько же времени, сколько по существующему.
 _DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-timing")
+
+
+@dataclass(frozen=True)
+class AuthenticatedUser:
+    user_id: int
+    expires_at: datetime  # когда истечёт access-токен: WS-соединение закрывается в этот момент
 
 
 class IdentityService:
@@ -62,6 +78,16 @@ class IdentityService:
         if await self._users.get_by_id(user_id) is None:
             raise UnauthorizedError("invalid_token", "Токен недействителен")
         return self._issue_tokens(user_id)
+
+    async def authenticate_for_chat(self, access_token: str) -> AuthenticatedUser:
+        """Проверка при подключении WebSocket: токен, пользователь, заполненная анкета."""
+        user_id, expires_at = decode_token_claims(access_token, "access", self._settings)
+        user = await self._users.get_by_id(user_id)
+        if user is None:
+            raise UnauthorizedError("invalid_token", "Токен недействителен")
+        if not user.survey_completed:
+            raise ForbiddenError("survey_required", "Сначала заполни анкету")
+        return AuthenticatedUser(user_id=user.id, expires_at=expires_at)
 
     async def get_me(self, user_id: int) -> MeOut:
         user = await self._get_user(user_id)

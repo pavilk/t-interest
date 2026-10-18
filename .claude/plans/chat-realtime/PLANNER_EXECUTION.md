@@ -2,13 +2,17 @@
 plan_type: execution
 version: 3
 status: current
-content_sha256: 3781aad6c953bf5db01e6a3b7385846f283bd2bcb9e0d6972a34e87e6f191a59
+content_sha256: 47200fd658039e543f7207dafaac7a0982b9ff847f1e84727ce22de5c0555754
 architecture:
   path: "./ARCHITECTURE.md"
-  version: 3
-  content_sha256: d97fa0812ae5588a3de8017c6091cebd5073cc187f9eb96b8f65d53ae5b3b6d0
+  version: 4
+  content_sha256: de7d1553c73537cc5abe284e6817dc2f1cdb28393c61d69a4c3ff4324fce76fa
 ---
 # Чаты и реалтайм — Execution plan
+
+## Статус
+
+Фазы 1–6 выполнены, отклонения — в `ARCHITECTURE.md` → «Реализация: отклонения от версии 3». Сквозная проверка на uvicorn и PostgreSQL 16 пройдена вручную (два пользователя, доставка, повтор, догрузка `after_id`, синхронизация `read`, коды `4401` и `1009`). Осталось из фазы 7: автоматический e2e-тест, сид демо-чатов (после появления `seeds/`), подтверждение WS-auth с вебом.
 
 ## Task summary
 - Type: feature

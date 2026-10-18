@@ -7,7 +7,7 @@ from app.models import ChatType
 
 MESSAGE_MAX_LENGTH = 4000
 # сырой текст может быть чуть длиннее: пробелы по краям обрезает сервис, он же проверяет длину
-_RAW_TEXT_MAX_LENGTH = MESSAGE_MAX_LENGTH + 100
+RAW_TEXT_MAX_LENGTH = MESSAGE_MAX_LENGTH + 100
 
 
 class UserBrief(BaseModel):
@@ -42,7 +42,7 @@ class MessagePage(BaseModel):
 
 
 class SendMessageRequest(BaseModel):
-    text: str = Field(max_length=_RAW_TEXT_MAX_LENGTH)
+    text: str = Field(max_length=RAW_TEXT_MAX_LENGTH)
     client_msg_id: UUID | None = Field(
         default=None, description="Ключ идемпотентности: повтор вернёт уже созданное сообщение"
     )
