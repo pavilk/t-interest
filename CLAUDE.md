@@ -49,6 +49,8 @@ pytest                               # все тесты (тесты на БД �
 TEST_DATABASE_URL=postgresql+asyncpg://tinterest:tinterest@localhost:5432/tinterest_test pytest tests/repositories  # тесты репозиториев на отдельной БД: схема пересоздаётся
 ruff check . && ruff format .        # линт и формат
 mypy                                 # проверка типов
+python -m seeds.demo_chat            # демо: 3 вымышленных пользователя, личный и групповой чат
+python -m http.server 5500 -d tools  # тестовая страница чата: http://localhost:5500/chat-demo.html
 ```
 
 Миграции берут `DATABASE_URL` из окружения, иначе из `.env`. Меняешь модели — в том же PR делай миграцию поверх текущей головы (`alembic heads` должен показывать одну).

@@ -33,3 +33,16 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]  # jwt_secret приходит из окружения
+
+
+class CorsSettings(BaseSettings):
+    """Отдельно от Settings: читается при создании приложения, где JWT_SECRET ещё не нужен."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # origin'ы веба через запятую (например http://localhost:5173); пусто — CORS выключен
+    cors_origins: str = ""
+
+    @property
+    def origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

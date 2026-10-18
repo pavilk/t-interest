@@ -1,13 +1,21 @@
 from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, chats, me, ws
 from app.api.connections import ConnectionManager
 from app.api.errors import register_error_handlers
+from app.core.config import CorsSettings
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Tinterest API", version="0.1.0")
     register_error_handlers(app)
+    origins = CorsSettings().origins
+    if origins:
+        # cookie не используются: токен идёт в заголовке Authorization
+        app.add_middleware(
+            CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"]
+        )
     # один менеджер на процесс: события из REST и WS доходят до всех соединений
     app.state.connections = ConnectionManager()
     app.state.event_publisher = app.state.connections

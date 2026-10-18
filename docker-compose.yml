@@ -1,0 +1,21 @@
+# Локальная разработка: пока только PostgreSQL. Сервис backend добавится вместе с Dockerfile.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tinterest
+      POSTGRES_PASSWORD: tinterest
+      POSTGRES_DB: tinterest
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # отдельная БД для тестов репозиториев (TEST_DATABASE_URL)
+      - ./docker/create-test-db.sql:/docker-entrypoint-initdb.d/create-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tinterest"]
+      interval: 2s
+      retries: 15
+
+volumes:
+  pgdata:

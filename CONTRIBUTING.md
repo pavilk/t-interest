@@ -36,11 +36,25 @@ mypy
 | `tests/unit/test_identity_service.py` | образец тестов сервиса |
 | `tests/api/test_identity_api.py` | образец тестов ручек (на фейках, без БД) |
 | **chat** — готов | `repositories/chat.py`, `services/chat.py`, `api/chats.py` (REST), `api/ws.py` + `api/connections.py` (WebSocket). Для matching и groups: `ChatService.ensure_direct_chat`, `create_group_chat`, `add_group_member`, `remove_group_member` в той же сессии запроса |
+| `seeds/demo_chat.py`, `tools/chat-demo.html` | ручная проверка чата: демо-пользователи и страница на чистом JS (см. «Как потестить чат») |
 | `tests/repositories/` | тесты на настоящей PostgreSQL, нужен `TEST_DATABASE_URL` (см. CLAUDE.md) |
 
 Миграции — в `alembic/` (команды в CLAUDE.md). Документация ручек: запусти
 `uvicorn app.main:app --reload` и открой http://localhost:8000/docs. Фреймы WebSocket
 описаны в `/openapi.json` как `ClientFrame` и `ServerFrame`.
+
+## Как потестить чат
+
+1. `docker compose up -d postgres`, затем `cp .env.example .env` и поменяй `JWT_SECRET`.
+2. `alembic upgrade head` и `python -m seeds.demo_chat`: появятся Аня, Борис и Вера
+   (почты `anya@`, `boris@`, `vera@example.com`, пароль `demo-password-123`),
+   их личный чат и групповой «Волейбол».
+3. `uvicorn app.main:app --reload --ws-max-size 16384` в одном терминале,
+   `python -m http.server 5500 -d tools` в другом.
+4. Открой http://localhost:5500/chat-demo.html в двух вкладках, войди разными людьми и пиши.
+   Внизу страницы видны все WS-фреймы. REST можно трогать в http://localhost:8000/docs.
+
+Пока нет matching и groups, новые чаты появляются только через сид.
 
 ## Как добавить модуль: 7 шагов
 
