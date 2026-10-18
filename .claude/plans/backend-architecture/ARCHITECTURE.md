@@ -84,12 +84,22 @@ Text после strip должен быть непустым; поле огра�
 
 | Метод | Вход | Выход | Ошибки |
 |---|---|---|---|
-| `GET /recommendations/people` | `limit` (≤ 20) | `[{user: PublicProfile, score, common_interests: [Interest], same_office: bool}]` | — |
+| `GET /recommendations/people` | `limit` (1..20, default 20; без offset) | `[{user: PublicProfile, score, common_interests: [Interest], same_office: bool}]` | `401`, `403 survey_required`, `422 validation_error` |
 | `POST /matches/{user_id}/like` | — | `{matched: bool, chat_id?: int}` | `404 user_not_found`, `422 cannot_match_self`, `409 already_declined` |
 | `POST /matches/{user_id}/decline` | — | `204` | `404`, `422 cannot_match_self` |
 | `GET /matches` | — | взаимные пары с `chat_id` | — |
 
 Побочный эффект `like`: upsert строки `matches` (порядок `user_a_id < user_b_id`), выставить свою сторону `accepted`. Если вторая сторона уже `accepted` → `ChatService.ensure_direct_chat(a, b)` в той же транзакции, ответ `matched = true` и `chat_id`. `decline` выставляет свою сторону `declined`; пара исчезает из выдачи обоих навсегда.
+
+Реализованы только рекомендации людей. Реакции, взаимные пары и интеграция chat — следующий этап.
+`PublicProfile = {id, name, about, office, interests, free_answers}`; email и роль не выдаются.
+`free_answers = [{question_id, question_text, text_value}]` содержит только активные text-вопросы.
+Интересы — одобренные поднаправления с одобренным родителем, по `(name, id)`;
+свободные ответы — по `(question.order, question.id)`.
+Префильтр применяет исключения до лимита 500 и берёт кандидатов по ID по возрастанию.
+Затем сортировка по `(-score, user_id)` и top-N; это не глобальный top-N всей базы.
+Данные загружаются пакетно через сервисы survey/identity, публичные профили — только для top-N.
+Запрос рекомендаций не создаёт и не меняет строки matches.
 
 ### groups
 
@@ -203,7 +213,7 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml
 
 ## Verification boundaries
 
-- **Скоринг** — unit-тесты чистых функций: пустые множества (score 0, без деления на ноль), полное совпадение = 1.0 + бонус, бонус офиса не суммируется с бонусом города, детерминированная сортировка при равном score.
+- **Скоринг** — unit-тесты чистых функций: пустые множества (Jaccard 0, без деления на ноль; бонус локации сохраняется), полное совпадение = 1.0 + бонус, бонус офиса не суммируется с бонусом города, детерминированная сортировка при равном score.
 - **Сервисы** (фейковые репозитории):
   - survey: каждое правило валидации даёт свой код ошибки; повторный `PUT` полностью заменяет ответы и интересы; `survey_completed` выставляется только при полном наборе обязательных;
   - matching: себя, отклонённых и уже лайкнутых нет в выдаче; второй like создаёт ровно один чат, третий не создаёт новый; like после decline → `409`;

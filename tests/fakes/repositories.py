@@ -4,9 +4,21 @@
 что и настоящий Sql*Repository. Если добавляешь метод в Protocol — добавь его и сюда.
 """
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 
-from app.models import AnswerOption, Interest, Office, Question, User, UserAnswer
+from app.models import (
+    AnswerOption,
+    Interest,
+    Match,
+    MatchStatus,
+    Office,
+    Question,
+    QuestionType,
+    User,
+    UserAnswer,
+)
 
 
 class FakeUserRepository:
@@ -46,11 +58,41 @@ class FakeOfficeRepository:
 
 class FakeSurveyRepository:
     def __init__(
-        self, questions: Sequence[Question] = (), options: Sequence[AnswerOption] = ()
+        self,
+        questions: Sequence[Question] = (),
+        options: Sequence[AnswerOption] = (),
+        *,
+        users: FakeUserRepository | None = None,
+        interests: FakeInterestRepository | None = None,
     ) -> None:
         self.questions = list(questions)
         self.options = list(options)
         self.answers: list[UserAnswer] = []
+        self.users = users if users is not None else FakeUserRepository()
+        self.interests = interests if interests is not None else FakeInterestRepository()
+
+    async def list_active_text_answers(self, user_ids: Sequence[int]) -> Sequence[UserAnswer]:
+        active = {q.id: q for q in self.questions if q.is_active and q.type == QuestionType.TEXT}
+        return sorted(
+            (
+                a
+                for a in self.answers
+                if a.user_id in user_ids and a.question_id in active and a.text_value is not None
+            ),
+            key=lambda a: (active[a.question_id].order, a.question_id),
+        )
+
+    async def list_matching_candidate_ids(
+        self, interest_ids: set[int], office_id: int, excluded_user_ids: set[int], limit: int
+    ) -> Sequence[int]:
+        user_interests = await self.interests.get_user_interest_ids(list(self.users.items))
+        return sorted(
+            u.id
+            for u in self.users.items.values()
+            if u.survey_completed
+            and u.id not in excluded_user_ids
+            and (u.office_id == office_id or bool(user_interests[u.id] & interest_ids))
+        )[:limit]
 
     async def list_active_questions(self) -> Sequence[Question]:
         return sorted((q for q in self.questions if q.is_active), key=lambda q: (q.order, q.id))
@@ -95,3 +137,21 @@ class FakeInterestRepository:
             if i.parent_id in visible and visible[i.parent_id].parent_id is None
         }
         return {u: self.user_interests.get(u, set()) & approved for u in user_ids}
+
+
+class FakeMatchRepository:
+    def __init__(self, matches: Sequence[Match] = ()) -> None:
+        self.items = list(matches)
+
+    async def excluded_user_ids(self, user_id: int) -> set[int]:
+        result = {user_id}
+        for match in self.items:
+            if user_id not in (match.user_a_id, match.user_b_id):
+                continue
+            own = match.a_status if user_id == match.user_a_id else match.b_status
+            if own == MatchStatus.ACCEPTED or MatchStatus.DECLINED in (
+                match.a_status,
+                match.b_status,
+            ):
+                result.add(match.user_b_id if user_id == match.user_a_id else match.user_a_id)
+        return result

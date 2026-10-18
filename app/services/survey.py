@@ -6,11 +6,13 @@ from app.models import AnswerOption, Question, QuestionType, UserAnswer
 from app.repositories.interfaces import InterestRepository, SurveyRepository
 from app.schemas.survey import (
     AnswerOptionOut,
+    FreeAnswerOut,
     InterestDirectionOut,
     InterestOut,
     MatchingProfile,
     QuestionOut,
     SurveyAnswer,
+    SurveyPublicProfile,
 )
 from app.schemas.user import MeOut
 from app.services.identity import IdentityService
@@ -166,4 +168,44 @@ class SurveyService:
                 interest_ids=interests.get(user_id, set()), office_id=office_id, city=city
             )
             for user_id, (office_id, city) in locations.items()
+        }
+
+    async def list_matching_candidate_ids(
+        self, profile: MatchingProfile, excluded_user_ids: set[int], limit: int
+    ) -> Sequence[int]:
+        return await self._surveys.list_matching_candidate_ids(
+            profile.interest_ids, profile.office_id, excluded_user_ids, limit
+        )
+
+    async def get_public_profiles(self, user_ids: Sequence[int]) -> dict[int, SurveyPublicProfile]:
+        if not user_ids:
+            return {}
+        interest_ids = await self._interests.get_user_interest_ids(user_ids)
+        interests = sorted(await self._interests.list_approved(), key=lambda i: (i.name, i.id))
+        questions = {q.id: q for q in await self._surveys.list_active_questions()}
+        answers: dict[int, list[FreeAnswerOut]] = defaultdict(list)
+        for row in await self._surveys.list_active_text_answers(user_ids):
+            question = questions.get(row.question_id)
+            # A question can be deactivated between the two reads under READ COMMITTED.
+            if question is None or question.type != QuestionType.TEXT or row.text_value is None:
+                continue
+            answers[row.user_id].append(
+                FreeAnswerOut(
+                    question_id=question.id,
+                    question_text=question.text,
+                    text_value=row.text_value,
+                )
+            )
+        return {
+            user_id: SurveyPublicProfile(
+                interests=[
+                    InterestOut.model_validate(i)
+                    for i in interests
+                    if i.id in interest_ids.get(user_id, set())
+                ],
+                free_answers=sorted(
+                    answers[user_id], key=lambda a: (questions[a.question_id].order, a.question_id)
+                ),
+            )
+            for user_id in user_ids
         }

@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import UserRole
+from app.schemas.survey import FreeAnswerOut, InterestOut
 
 
 class OfficeOut(BaseModel):
@@ -9,6 +10,18 @@ class OfficeOut(BaseModel):
     id: int
     city: str
     name: str
+
+
+class PublicIdentityOut(BaseModel):
+    id: int
+    name: str
+    about: str | None
+    office: OfficeOut
+
+
+class PublicProfile(PublicIdentityOut):
+    interests: list[InterestOut]
+    free_answers: list[FreeAnswerOut]
 
 
 class MeOut(BaseModel):

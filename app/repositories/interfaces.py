@@ -35,6 +35,12 @@ class OfficeRepository(Protocol):
 
 
 class SurveyRepository(Protocol):
+    async def list_active_text_answers(self, user_ids: Sequence[int]) -> Sequence[UserAnswer]: ...
+
+    async def list_matching_candidate_ids(
+        self, interest_ids: set[int], office_id: int, excluded_user_ids: set[int], limit: int
+    ) -> Sequence[int]: ...
+
     async def list_active_questions(self) -> Sequence[Question]: ...
 
     async def list_options(self, question_ids: Sequence[int]) -> Sequence[AnswerOption]: ...
@@ -54,5 +60,9 @@ class InterestRepository(Protocol):
     async def get_user_interest_ids(self, user_ids: Sequence[int]) -> dict[int, set[int]]: ...
 
 
-# TODO: MatchRepository, GroupRepository, ChatRepository —
+class MatchRepository(Protocol):
+    async def excluded_user_ids(self, user_id: int) -> set[int]: ...
+
+
+# TODO: GroupRepository, ChatRepository —
 # по образцу выше. Методы выводи из контрактов в .claude/plans/backend-architecture/ARCHITECTURE.md.

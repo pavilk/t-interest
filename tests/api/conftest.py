@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from app.core.config import Settings, get_settings
 from app.core.deps import (
     get_interest_repository,
+    get_match_repository,
     get_office_repository,
     get_survey_repository,
     get_user_repository,
@@ -20,6 +21,7 @@ from app.main import create_app
 from app.models import Office
 from tests.fakes.repositories import (
     FakeInterestRepository,
+    FakeMatchRepository,
     FakeOfficeRepository,
     FakeSurveyRepository,
     FakeUserRepository,
@@ -37,8 +39,13 @@ def offices() -> FakeOfficeRepository:
 
 
 @pytest.fixture
-def surveys() -> FakeSurveyRepository:
-    return FakeSurveyRepository()
+def surveys(users: FakeUserRepository, interests: FakeInterestRepository) -> FakeSurveyRepository:
+    return FakeSurveyRepository(users=users, interests=interests)
+
+
+@pytest.fixture
+def matches() -> FakeMatchRepository:
+    return FakeMatchRepository()
 
 
 @pytest.fixture
@@ -53,6 +60,7 @@ async def client(
     settings: Settings,
     surveys: FakeSurveyRepository,
     interests: FakeInterestRepository,
+    matches: FakeMatchRepository,
 ) -> AsyncIterator[AsyncClient]:
     app = create_app()
     app.dependency_overrides[get_user_repository] = lambda: users
@@ -60,5 +68,6 @@ async def client(
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_survey_repository] = lambda: surveys
     app.dependency_overrides[get_interest_repository] = lambda: interests
+    app.dependency_overrides[get_match_repository] = lambda: matches
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client

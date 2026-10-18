@@ -103,6 +103,32 @@ PostgreSQL не поддерживает этот символ в текстов
 связей не пересчитывает уже сохранённые user_interests автоматически: такая операция
 должна включать пересчёт по активным ответам. Автоматического сброса survey_completed нет.
 
+## Рекомендации людей
+
+Реализован первый этап matching: `GET /api/v1/recommendations/people?limit=20`.
+Нужны access JWT и заполненная анкета; иначе `401` или `403 survey_required`.
+`limit` — целое число 1..20, по умолчанию 20; неверное значение — `422 validation_error`.
+Пустая выдача — `200 []`, пагинации offset у этой подборки нет.
+
+Элемент ответа: `{user, score, common_interests, same_office}`. Публичный `user` содержит
+`id`, `name`, `about`, `office`, `interests`, `free_answers`; email и роль не выдаются.
+Свободный ответ — `{question_id, question_text, text_value}` активного text-вопроса.
+Интересы сортируются по `(name, id)`, ответы — по `(question.order, question.id)`.
+
+Скоринг: Jaccard одобренных поднаправлений + 0.15 за один офис либо 0.05 за один город
+при разных офисах, округление до 3 знаков, максимум 1.15. При пустых интересах Jaccard = 0,
+бонус офиса сохраняется. Общий город сам по себе не включает человека в кандидаты.
+SQL отбирает пользователей с заполненной анкетой и общим интересом либо тем же офисом.
+Исключаются сам пользователь, пары с decline любой стороны и исходящие accepted;
+входящий accepted не исключает кандидата. В MVP decline также обозначает блокировку.
+После исключений берутся первые 500 ID, затем top-N по `(-score, user_id)`.
+Это лучшие среди отобранных 500, а не глобальный top-N по всей базе.
+
+Данные загружаются пакетно через сервисы identity/survey; запрос не записывает `matches`.
+Изменение анкеты или офиса учитывается при следующем запросе, фонового кэша нет.
+Like/decline, список взаимных пар и создание чатов ещё не реализованы.
+Рекомендации групп относятся к модулю groups.
+
 ## Проверки на PostgreSQL
 
 ```bash
@@ -205,6 +231,6 @@ SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 |---|---|---|---|
 | **survey — готов** | `SurveyRepository`: активные вопросы, варианты, замена активных ответов с сохранением истории. `InterestRepository`: дерево интересов, замена интересов пользователя | `SurveyService`: `get_survey`, `get_answers`, `submit_answers`, `list_interests`, `get_matching_profile(user_ids)`; модели и Protocol — образец для следующих модулей | Contracts → survey |
 | **chat** | `ChatRepository`: `get_direct_by_key`, `add_chat`, `add_member`, `is_member`, `list_user_chats`, `add_message`, `list_messages(before_id, limit)`, `mark_read` | `ChatService`: `ensure_direct_chat(a, b)` (ключ `"<min>:<max>"`, идемпотентно), `create_group_chat`, `send_message` (проверка членства, текст 1..4000), `list_chats` с unread | Contracts → chat |
-| **matching** | `MatchRepository`: `get_pair(a, b)`, `add`, `excluded_user_ids(user_id)` | `services/matching.py`: **чистые функции** `jaccard`, `score` + `MatchingService`: `recommend_people`, `like`, `decline`. Пара всегда `user_a_id < user_b_id` | Contracts → matching, Decisions 4–5 |
+| **matching — рекомендации готовы** | Есть `excluded_user_ids(user_id)`. Для реакций добавить `get_pair(a, b)`, `add` и методы конкурентного изменения пары | Есть чистые `jaccard`, `score` и `MatchingService.recommend_people`. Остались `like`, `decline`, взаимные пары и интеграция chat. Пара всегда `user_a_id < user_b_id` | Contracts → matching, Decisions 4–5 |
 | **groups** | `GroupRepository`: `get`, `get_active_by_interest`, `add`, `list_pending`, `add_member`, `is_member`, `recommend_for_interests` | `GroupService`: `create_request`, `approve`/`reject` (только moderator/admin), `join`, `leave` | Contracts → groups |
 | **search** | `SearchRepository`: `ILIKE` по людям и одобренным группам | `SearchService`: строка ≥ 2 символов, limit 20 | Data flow → 6 |

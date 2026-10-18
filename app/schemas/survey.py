@@ -47,3 +47,14 @@ class MatchingProfile(BaseModel):
     interest_ids: set[int]
     office_id: int
     city: str
+
+
+class FreeAnswerOut(BaseModel):
+    question_id: int
+    question_text: str
+    text_value: str
+
+
+class SurveyPublicProfile(BaseModel):
+    interests: list[InterestOut]
+    free_answers: list[FreeAnswerOut]
