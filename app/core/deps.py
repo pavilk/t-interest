@@ -8,18 +8,23 @@
 from typing import Annotated
 
 from fastapi import Depends
+from fastapi.requests import HTTPConnection
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.db import get_session
+from app.core.db import get_outbox, get_session
 from app.core.errors import ForbiddenError, UnauthorizedError
+from app.core.rate_limit import RateLimiter, TokenBucketLimiter
 from app.core.security import decode_token
 from app.models import User
-from app.repositories.interfaces import OfficeRepository, UserRepository
+from app.repositories.chat import SqlChatRepository
+from app.repositories.interfaces import ChatRepository, OfficeRepository, UserRepository
 from app.repositories.office import SqlOfficeRepository
 from app.repositories.user import SqlUserRepository
+from app.services.chat import ChatService
 from app.services.identity import IdentityService
+from app.services.notifier import ChatEventSink
 
 # scope="function": commit в get_session выполняется до отправки ответа, а не после
 SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
@@ -37,8 +42,34 @@ def get_office_repository(session: SessionDep) -> OfficeRepository:
     return SqlOfficeRepository(session)
 
 
+def get_chat_repository(session: SessionDep) -> ChatRepository:
+    return SqlChatRepository(session)
+
+
 UserRepositoryDep = Annotated[UserRepository, Depends(get_user_repository)]
 OfficeRepositoryDep = Annotated[OfficeRepository, Depends(get_office_repository)]
+ChatRepositoryDep = Annotated[ChatRepository, Depends(get_chat_repository)]
+
+
+# --- события и лимиты ---
+
+
+def get_chat_events(session: SessionDep) -> ChatEventSink:
+    """Outbox сессии запроса: события уйдут в WS только после commit в get_session."""
+    return get_outbox(session)
+
+
+def get_rate_limiter(conn: HTTPConnection, settings: SettingsDep) -> RateLimiter:
+    """Один лимитер на приложение: общий для REST и WS."""
+    limiter: RateLimiter | None = getattr(conn.app.state, "rate_limiter", None)
+    if limiter is None:
+        limiter = TokenBucketLimiter(settings.chat_rate_per_second, settings.chat_rate_burst)
+        conn.app.state.rate_limiter = limiter
+    return limiter
+
+
+ChatEventsDep = Annotated[ChatEventSink, Depends(get_chat_events)]
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
 
 
 # --- сервисы ---
@@ -50,7 +81,14 @@ def get_identity_service(
     return IdentityService(users, offices, settings)
 
 
+def get_chat_service(
+    chats: ChatRepositoryDep, events: ChatEventsDep, limiter: RateLimiterDep
+) -> ChatService:
+    return ChatService(chats, events, limiter)
+
+
 IdentityServiceDep = Annotated[IdentityService, Depends(get_identity_service)]
+ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 
 
 # --- текущий пользователь ---
