@@ -95,9 +95,9 @@ docker-compose.yml
 - **Match**: id, user_a_id, user_b_id, score, a_status, b_status (pending / accepted / declined), created_at. Всегда `user_a_id < user_b_id`, UNIQUE (user_a_id, user_b_id). Пара взаимная, когда оба статуса `accepted`.
 - **Group**: id, name, description, interest_id, created_by, status (pending / approved / rejected), created_at. Пользователям видны только `approved`.
 - **GroupMember**: group_id, user_id, role (owner / member). PK (group_id, user_id).
-- **Chat**: id, type (direct / group), group_id?. Личный чат между двумя людьми только один.
-- **ChatMember**: chat_id, user_id, last_read_message_id?. PK (chat_id, user_id).
-- **Message**: id, chat_id, sender_id, text, created_at.
+- **Chat**: id, type (direct / group), group_id?, direct_key?. Личный чат между двумя людьми только один: `direct_key = "<min_id>:<max_id>"` (UNIQUE), у group он пустой (CHECK).
+- **ChatMember**: chat_id, user_id, last_read_message_id? (bigint, без FK, двигается только вперёд), joined_at. PK (chat_id, user_id), индекс (user_id).
+- **Message**: id (bigint), chat_id, sender_id, text, client_msg_id?, created_at. UNIQUE (sender_id, client_msg_id) — идемпотентная отправка. CHECK: текст не пустой после trim.
 
 Если схема в коде расходится с этим списком, обнови этот раздел.
 
