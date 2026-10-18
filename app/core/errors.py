@@ -30,3 +30,7 @@ class DomainValidationError(DomainError):
 
 class UnauthorizedError(DomainError):
     """Неверные учётные данные или токен (→ 401)."""
+
+
+class RateLimitedError(DomainError):
+    """Слишком много действий за короткое время (→ 429)."""

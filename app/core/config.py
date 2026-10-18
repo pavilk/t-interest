@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     refresh_token_ttl_days: int = 14
     allowed_email_domains: str = "example.com"
 
+    # чат и WebSocket
+    ws_auth_timeout_seconds: float = 5
+    ws_idle_timeout_seconds: float = 60
+    ws_max_connections_per_user: int = 5
+    ws_send_queue_size: int = 100
+    chat_rate_per_second: float = 5
+    chat_rate_burst: int = 10
+
     @property
     def allowed_domains(self) -> frozenset[str]:
         return frozenset(

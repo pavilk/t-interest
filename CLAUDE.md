@@ -45,7 +45,8 @@ alembic revision --autogenerate -m "..."  # новая миграция (про�
 alembic downgrade -1                 # откатить последнюю миграцию
 alembic check                        # модели и миграции совпадают (перед PR)
 uvicorn app.main:app --reload        # запустить API локально
-pytest                               # все тесты
+pytest                               # все тесты (тесты на БД пропускаются без TEST_DATABASE_URL)
+TEST_DATABASE_URL=postgresql+asyncpg://tinterest:tinterest@localhost:5432/tinterest_test pytest tests/repositories  # тесты репозиториев на отдельной БД: схема пересоздаётся
 ruff check . && ruff format .        # линт и формат
 mypy                                 # проверка типов
 ```
