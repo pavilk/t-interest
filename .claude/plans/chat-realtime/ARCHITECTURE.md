@@ -1,8 +1,8 @@
 ---
 plan_type: architecture
-version: 2
+version: 3
 status: current
-content_sha256: 955504574c45402b82e404eafca7fe5cca097421b882b4d0a15e1b48a913c417
+content_sha256: d97fa0812ae5588a3de8017c6091cebd5073cc187f9eb96b8f65d53ae5b3b6d0
 ---
 # Чаты и реалтайм — Architecture
 
@@ -308,16 +308,14 @@ async def chat_ws(websocket: WebSocket, units: ChatUnitFactoryDep, settings: Set
 
 | Таблица | Изменение | Зачем |
 |---|---|---|
+| `messages` | `id` → `BigInteger` | сообщений больше всего, менять тип потом дорого |
 | `messages` | `+ client_msg_id uuid NULL`, UNIQUE (`sender_id`, `client_msg_id`) | идемпотентность (решение 5); NULL не конфликтуют |
+| `messages` | CHECK `length(btrim(text)) > 0` | защита от пустых сообщений на уровне БД |
+| `chats` | CHECK `(type = 'direct') = (direct_key IS NOT NULL)` | у group нет `direct_key`, у direct он обязателен |
 | `chat_members` | индекс `(user_id)` | PK `(chat_id, user_id)` не помогает выборке «мои чаты» и проверке членства |
+| `chat_members` | `last_read_message_id` → `BigInteger`, без FK | согласовать с типом `messages.id`; FK не нужен, указатель — просто граница |
 
 Индекс `messages (chat_id, id)` уже есть и покрывает историю, последний месседж и unread.
-
-Сознательно **не** делается:
-- `messages.id` остаётся `Integer`, потому что на масштабе одной компании запаса в 2 млрд хватает;
-- CHECK на `direct_key` и на непустой текст не добавляются: инварианты держит `ChatService` (`ensure_direct_chat` всегда ставит ключ, `send_message` отбрасывает пустой текст) и покрывают его unit-тесты.
-
-`last_read_message_id` остаётся без FK: это просто граница, а не ссылка.
 
 Миграция чата создаётся **поверх** базовой миграции каркаса (`down_revision` = её ревизия). Если базовой ещё нет, модели правятся в этой ветке, а автогенерация делается после появления базовой, чтобы не получить две головы Alembic. После изменения схемы нужно обновить раздел «Основные сущности» в `CLAUDE.md` (поле `client_msg_id`).
 
@@ -347,6 +345,7 @@ async def chat_ws(websocket: WebSocket, units: ChatUnitFactoryDep, settings: Set
 - **ChatRepository (тестовая PostgreSQL):**
   - два параллельных `get_or_create_direct` с одним ключом в двух сессиях дают один чат;
   - два параллельных `add_message` с одним `client_msg_id` дают одну строку и один `created = True`;
+  - срабатывают CHECK `direct_key` и пустого текста;
   - вторая вставка с тем же (`sender_id`, `client_msg_id`) отклоняется UNIQUE, а с `client_msg_id = NULL` — нет;
   - `unread_count` учитывает `last_read` и исключает свои сообщения;
   - курсоры `before_id`/`after_id` и `has_more` на границах (ровно `limit` строк, пустой чат);

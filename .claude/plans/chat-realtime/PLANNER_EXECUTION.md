@@ -1,12 +1,12 @@
 ---
 plan_type: execution
-version: 2
+version: 3
 status: current
-content_sha256: e8ccdfe20026366ea910dd28c7df0ed74d471f66f47202f5bd138cf9d02936da
+content_sha256: 3781aad6c953bf5db01e6a3b7385846f283bd2bcb9e0d6972a34e87e6f191a59
 architecture:
   path: "./ARCHITECTURE.md"
-  version: 2
-  content_sha256: 955504574c45402b82e404eafca7fe5cca097421b882b4d0a15e1b48a913c417
+  version: 3
+  content_sha256: d97fa0812ae5588a3de8017c6091cebd5073cc187f9eb96b8f65d53ae5b3b6d0
 ---
 # Чаты и реалтайм — Execution plan
 
@@ -25,14 +25,17 @@ architecture:
 
 ## Phase 1 — Схема чата (parallel с фазой 2)
 - Agent: general-purpose (fallback для роли backend-python; GAP в `planner-context.md` §1)
-- Model: haiku (две механические правки одного файла)
+- Model: sonnet
 - Skills: none
 - Inputs: `ARCHITECTURE.md` → Decisions → «Схема БД (дельта к текущим моделям)»; `app/models/chat.py`, `app/models/base.py`; раздел «Основные сущности» в `CLAUDE.md`.
-- Work: применить дельту моделей — только две правки.
+- Work: применить дельту моделей.
+  - `Message.id` и `ChatMember.last_read_message_id` → `BigInteger`;
   - `Message.client_msg_id: UUID | None` и UNIQUE (`sender_id`, `client_msg_id`);
+  - CHECK непустого текста;
+  - CHECK `(type = 'direct') = (direct_key IS NOT NULL)` у `Chat`;
   - индекс `chat_members(user_id)`.
 
-  Типы id и CHECK-ограничения не трогать (см. «Сознательно не делается» в архитектуре). Имена ограничений — через `NAMING_CONVENTION`. Миграция:
+  Имена ограничений — через `NAMING_CONVENTION`. Миграция:
   - если в `alembic/` уже есть базовая ревизия — сгенерировать миграцию чата поверх неё и проверить руками;
   - иначе миграцию **не** создавать и записать в описание PR, что её генерирует тот, кто инициализирует Alembic, либо эта ветка после merge базовой.
 - Outputs: `app/models/chat.py`, `./CLAUDE.md` (поле `client_msg_id` в `Message`), условно `alembic/versions/`.
@@ -83,7 +86,7 @@ architecture:
   - Тестовая инфраструктура БД: `tests/repositories/conftest.py` берёт `TEST_DATABASE_URL`, создаёт схему через `Base.metadata.create_all`, даёт транзакцию на тест с откатом, а без переменной окружения тесты помечаются `skip`.
   - Тесты гонок в двух отдельных сессиях.
 - Outputs: `app/repositories/chat.py`, `tests/repositories/__init__.py`, `tests/repositories/conftest.py`, `tests/repositories/test_chat_repository.py`.
-- Verification: при поднятой БД (`docker compose up -d postgres` или локальная PostgreSQL 16) все тесты из Verification → «ChatRepository» проходят: гонки, UNIQUE `client_msg_id`, unread, курсоры, сортировка, title/peer. Без БД они `skipped`, а не `failed`.
+- Verification: при поднятой БД (`docker compose up -d postgres` или локальная PostgreSQL 16) все тесты из Verification → «ChatRepository» проходят: гонки, CHECK, UNIQUE `client_msg_id`, unread, курсоры, сортировка, title/peer. Без БД они `skipped`, а не `failed`.
 
 ## Phase 4 — ChatService и unit-тесты (parallel с фазой 3b; после 2 и 3a)
 - Agent: general-purpose
