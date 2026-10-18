@@ -6,7 +6,7 @@ from app.core.deps import MatchingServiceDep, SurveyCompletedUser
 from app.schemas.errors import error_responses
 from app.schemas.matching import PersonRecommendationOut
 
-router = APIRouter(tags=["matching"], responses=error_responses(401, 403, 422))
+router = APIRouter(tags=["matching"], responses=error_responses(401, 403, 404, 422))
 
 
 @router.get("/recommendations/people")

@@ -41,14 +41,24 @@ class MatchingService:
         )
         if not candidate_ids:
             return []
-        profiles = await self._survey.get_matching_profile(candidate_ids)
+        # Capture the fields used in both ranking and the response once. Later
+        # profile updates must not mix a score with a different set of interests/office.
+        users = await self._identity.get_public_profiles(candidate_ids)
+        interests = await self._survey.get_user_interests(list(users))
+        profiles = {
+            candidate_id: MatchingProfile(
+                interest_ids={i.id for i in interests[candidate_id]},
+                office_id=user.office.id,
+                city=user.office.city,
+            )
+            for candidate_id, user in users.items()
+        }
         ranked = sorted(
             ((candidate_id, score(own, profile)) for candidate_id, profile in profiles.items()),
             key=lambda item: (-item[1], item[0]),
         )[:limit]
         selected_ids = [candidate_id for candidate_id, _ in ranked]
-        users = await self._identity.get_public_profiles(selected_ids)
-        details = await self._survey.get_public_profiles(selected_ids)
+        free_answers = await self._survey.get_free_answers(selected_ids)
         return [
             PersonRecommendationOut(
                 user=PublicProfile(
@@ -56,15 +66,12 @@ class MatchingService:
                     name=users[candidate_id].name,
                     about=users[candidate_id].about,
                     office=users[candidate_id].office,
-                    interests=details[candidate_id].interests,
-                    free_answers=details[candidate_id].free_answers,
+                    interests=interests[candidate_id],
+                    free_answers=free_answers[candidate_id],
                 ),
                 score=value,
-                common_interests=[
-                    i for i in details[candidate_id].interests if i.id in own.interest_ids
-                ],
+                common_interests=[i for i in interests[candidate_id] if i.id in own.interest_ids],
                 same_office=profiles[candidate_id].office_id == own.office_id,
             )
             for candidate_id, value in ranked
-            if candidate_id in users
         ]

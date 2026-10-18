@@ -84,7 +84,7 @@ Text после strip должен быть непустым; поле огра�
 
 | Метод | Вход | Выход | Ошибки |
 |---|---|---|---|
-| `GET /recommendations/people` | `limit` (1..20, default 20; без offset) | `[{user: PublicProfile, score, common_interests: [Interest], same_office: bool}]` | `401`, `403 survey_required`, `422 validation_error` |
+| `GET /recommendations/people` | `limit` (1..20, default 20; без offset) | `[{user: PublicProfile, score, common_interests: [Interest], same_office: bool}]` | `401`, `403 survey_required`, `404 user_not_found` (удаление после авторизации), `422 validation_error` |
 | `POST /matches/{user_id}/like` | — | `{matched: bool, chat_id?: int}` | `404 user_not_found`, `422 cannot_match_self`, `409 already_declined` |
 | `POST /matches/{user_id}/decline` | — | `204` | `404`, `422 cannot_match_self` |
 | `GET /matches` | — | взаимные пары с `chat_id` | — |
@@ -98,7 +98,9 @@ Text после strip должен быть непустым; поле огра�
 свободные ответы — по `(question.order, question.id)`.
 Префильтр применяет исключения до лимита 500 и берёт кандидатов по ID по возрастанию.
 Затем сортировка по `(-score, user_id)` и top-N; это не глобальный top-N всей базы.
-Данные загружаются пакетно через сервисы survey/identity, публичные профили — только для top-N.
+Данные загружаются пакетно через сервисы survey/identity. Офис и одобренные интересы кандидатов
+фиксируются один раз для скоринга, ранжирования и публичного профиля; повторного чтения этих
+полей после ранжирования нет. Свободные ответы загружаются только для top-N.
 Запрос рекомендаций не создаёт и не меняет строки matches.
 
 ### groups
@@ -149,12 +151,12 @@ Text после strip должен быть непустым; поле огра�
 - `ChatService.ensure_direct_chat(user_a, user_b) -> Chat` — идемпотентно: существующий личный чат пары или новый. Уникальность обеспечивается колонкой `chats.direct_key = "<min>:<max>"` с UNIQUE.
 - `ChatService.create_group_chat(group_id, member_ids) -> Chat`; `ChatService.add_member(chat_id, user_id)`; `remove_member`.
 - `ChatService` после коммита публикует события в `Notifier` (интерфейс в `services/`, реализация `ConnectionManager` в `api/ws.py`); в HTTP-запросах события копятся в per-request буфере и отправляются после `commit` в `get_session`.
-- `SurveyService.get_matching_profile(user_ids) -> {user_id: (set[interest_id], office_id, city)}` — единственный вход matching в данные анкеты.
+- `SurveyService.get_matching_profile(user_ids) -> dict[int, MatchingProfile]` — интересы и локация текущего пользователя для префильтра и скоринга. Интересы кандидатов — через `SurveyService.get_user_interests(user_ids)`, свободные ответы выбранных пользователей — через `get_free_answers(user_ids)`; данные анкеты matching читает только через SurveyService.
 
 ## Data flow
 
 1. **Онбординг.** `POST /auth/register` → `IdentityService` проверяет домен email из `ALLOWED_EMAIL_DOMAINS`, хэширует argon2, создаёт `users` → `TokenPair`. Веб видит `survey_completed = false` в `GET /me` → `GET /survey` → `PUT /survey/answers` → `SurveyService` валидирует, заменяет ответы, пересчитывает `user_interests`, ставит флаг → коммит.
-2. **Рекомендации людей.** `GET /recommendations/people` → `MatchingService`: `MatchRepository` отдаёт id исключений (сам пользователь, любые пары с `declined`, пары, где пользователь уже поставил `accepted`) → `SurveyRepository` префильтром SQL берёт кандидатов с `survey_completed`, у которых ≥ 1 общий интерес **или** тот же офис (лимит 500) → `SurveyService.get_matching_profile` → чистая функция `score()` → сортировка по score, затем по id → top-N.
+2. **Рекомендации людей.** `GET /recommendations/people` → `MatchingService`: `MatchRepository` отдаёт id исключений (сам пользователь, любые пары с `declined`, пары, где пользователь уже поставил `accepted`) → профиль текущего пользователя через `SurveyService.get_matching_profile` → `SurveyService.list_matching_candidate_ids` вызывает SQL-префильтр SurveyRepository: заполненная анкета и ≥ 1 общий интерес **или** тот же офис, исключения до лимита 500, порядок по ID → пакетные данные кандидатов через `IdentityService.get_public_profiles` и `SurveyService.get_user_interests` → `score()` на этих данных → сортировка по `(-score, user_id)` → top-N → `SurveyService.get_free_answers` только для выбранных пользователей. Публичный профиль и объяснение используют те же офисы и интересы, что скоринг.
 3. **Матч → чат.** A лайкает B → upsert `matches` (A=accepted). Позже B лайкает A → вторая сторона accepted → `ensure_direct_chat` → коммит → `chat_created` обоим через WS → ответ B `matched = true, chat_id`.
 4. **Сообщение.** WS `send` → проверка членства (`ChatRepository.is_member`) → INSERT `messages` → коммит → `ConnectionManager` шлёт `message` всем онлайн-участникам и `ack` отправителю. Офлайн-участники увидят сообщение через `GET /chats` (unread) и `GET /chats/{id}/messages`.
 5. **Новая группа.** `POST /groups` с `new_interest` → создаётся `interests (is_approved = false)` + `groups (pending)` → модератор `GET /moderation/groups` → `approve` → интерес виден, группа видна, групповой чат с автором. Чужие пользователи до одобрения получают 404.

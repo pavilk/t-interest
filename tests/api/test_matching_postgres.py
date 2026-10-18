@@ -1,17 +1,70 @@
+from collections.abc import Sequence
+
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event, func, select
+from sqlalchemy import delete, event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core import db
 from app.core.config import Settings, get_settings
 from app.core.security import create_token
 from app.main import create_app
-from app.models import Match, Office, User
+from app.models import Match, Office, User, UserInterest
+from app.schemas.user import PublicIdentityOut
+from app.services.identity import IdentityService
 from seeds.__main__ import seed
 
 pytestmark = pytest.mark.postgres
 PATH = "/api/v1/recommendations/people"
+
+
+@pytest.mark.parametrize("change", ["interests", "office"])
+async def test_concurrent_commit_keeps_score_and_public_profile_consistent(
+    pg_data: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    async with pg_data.begin() as session:
+        session.add(Office(id=2, city="Тестовый город", name="Второй офис"))
+        for user in (await session.scalars(select(User))).all():
+            user.survey_completed = True
+        session.add_all(
+            [UserInterest(user_id=1, interest_id=11), UserInterest(user_id=2, interest_id=11)]
+        )
+    original = IdentityService.get_public_profiles
+
+    async def commit_update_before_public_read(
+        self: IdentityService,
+        user_ids: Sequence[int],
+    ) -> dict[int, PublicIdentityOut]:
+        # Commit a real update on another connection between recommendation reads.
+        async with pg_data.begin() as session:
+            if change == "interests":
+                await session.execute(delete(UserInterest).where(UserInterest.user_id == 2))
+                session.add(UserInterest(user_id=2, interest_id=12))
+            else:
+                user = await session.get(User, 2)
+                assert user is not None
+                user.office_id = 2
+        return await original(self, user_ids)
+
+    monkeypatch.setattr(IdentityService, "get_public_profiles", commit_update_before_public_read)
+    monkeypatch.setattr(db, "get_session_factory", lambda: pg_data)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            PATH, headers={"Authorization": f"Bearer {create_token(1, 'access', settings)}"}
+        )
+    assert response.status_code == 200
+    (row,) = response.json()
+    assert row["user"]["id"] == 2
+    assert row["score"] == (0.15 if change == "interests" else 1.05)
+    assert row["same_office"] is (change == "interests")
+    assert row["user"]["office"]["id"] == (1 if change == "interests" else 2)
+    assert [i["id"] for i in row["common_interests"]] == ([] if change == "interests" else [11])
+    assert [i["id"] for i in row["user"]["interests"]] == ([12] if change == "interests" else [11])
 
 
 async def test_onboarding_recommendations_and_profile_changes(

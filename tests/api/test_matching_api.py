@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import pytest
 from httpx import AsyncClient
 
@@ -62,6 +64,24 @@ async def test_public_response_and_empty_result(
     assert response.status_code == 200 and response.json() == []
 
 
+async def test_user_removed_after_auth_returns_documented_404(
+    client: AsyncClient,
+    users: FakeUserRepository,
+    auth: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = users.list_by_ids
+
+    async def remove_current_user(user_ids: Sequence[int]) -> Sequence[User]:
+        users.items.pop(1, None)
+        return await original(user_ids)
+
+    monkeypatch.setattr(users, "list_by_ids", remove_current_user)
+    response = await client.get(PATH, headers=auth)
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "user_not_found"
+
+
 @pytest.mark.parametrize("limit", ["0", "-1", "21", "1.5", "abc"])
 async def test_invalid_limit(client: AsyncClient, auth: dict[str, str], limit: str) -> None:
     response = await client.get(PATH, params={"limit": limit}, headers=auth)
@@ -89,7 +109,7 @@ async def test_limit_default_and_boundaries(
 async def test_openapi_matching(client: AsyncClient) -> None:
     schema = (await client.get("/openapi.json")).json()
     endpoint = schema["paths"][PATH]["get"]
-    assert {"200", "401", "403", "422"} <= endpoint["responses"].keys()
+    assert {"200", "401", "403", "404", "422"} <= endpoint["responses"].keys()
     assert endpoint["security"] == [{"HTTPBearer": []}]
     limit = next(p["schema"] for p in endpoint["parameters"] if p["name"] == "limit")
     assert (limit["minimum"], limit["maximum"], limit["default"]) == (1, 20, 20)

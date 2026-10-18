@@ -177,11 +177,23 @@ class SurveyService:
             profile.interest_ids, profile.office_id, excluded_user_ids, limit
         )
 
-    async def get_public_profiles(self, user_ids: Sequence[int]) -> dict[int, SurveyPublicProfile]:
+    async def get_user_interests(self, user_ids: Sequence[int]) -> dict[int, list[InterestOut]]:
         if not user_ids:
             return {}
         interest_ids = await self._interests.get_user_interest_ids(user_ids)
         interests = sorted(await self._interests.list_approved(), key=lambda i: (i.name, i.id))
+        return {
+            user_id: [
+                InterestOut.model_validate(i)
+                for i in interests
+                if i.id in interest_ids.get(user_id, set())
+            ]
+            for user_id in user_ids
+        }
+
+    async def get_free_answers(self, user_ids: Sequence[int]) -> dict[int, list[FreeAnswerOut]]:
+        if not user_ids:
+            return {}
         questions = {q.id: q for q in await self._surveys.list_active_questions()}
         answers: dict[int, list[FreeAnswerOut]] = defaultdict(list)
         for row in await self._surveys.list_active_text_answers(user_ids):
@@ -197,15 +209,18 @@ class SurveyService:
                 )
             )
         return {
+            user_id: sorted(
+                answers[user_id], key=lambda a: (questions[a.question_id].order, a.question_id)
+            )
+            for user_id in user_ids
+        }
+
+    async def get_public_profiles(self, user_ids: Sequence[int]) -> dict[int, SurveyPublicProfile]:
+        interests = await self.get_user_interests(user_ids)
+        answers = await self.get_free_answers(user_ids)
+        return {
             user_id: SurveyPublicProfile(
-                interests=[
-                    InterestOut.model_validate(i)
-                    for i in interests
-                    if i.id in interest_ids.get(user_id, set())
-                ],
-                free_answers=sorted(
-                    answers[user_id], key=lambda a: (questions[a.question_id].order, a.question_id)
-                ),
+                interests=interests[user_id], free_answers=answers[user_id]
             )
             for user_id in user_ids
         }

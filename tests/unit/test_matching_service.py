@@ -1,8 +1,10 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pytest
 
 from app.core.config import Settings
+from app.core.errors import NotFoundError
 from app.models import (
     Interest,
     Match,
@@ -13,6 +15,7 @@ from app.models import (
     User,
     UserAnswer,
 )
+from app.schemas.user import PublicIdentityOut
 from app.services.identity import IdentityService
 from app.services.matching import MatchingService
 from app.services.survey import SurveyService
@@ -32,6 +35,7 @@ class Context:
     interests: FakeInterestRepository
     surveys: FakeSurveyRepository
     matches: FakeMatchRepository
+    identity: IdentityService
 
 
 @pytest.fixture
@@ -65,7 +69,46 @@ def ctx(settings: Settings) -> Context:
         interests,
         surveys,
         matches,
+        identity,
     )
+
+
+async def test_missing_current_user_has_domain_error(ctx: Context) -> None:
+    with pytest.raises(NotFoundError) as exc:
+        await ctx.service.recommend_people(999, 20)
+    assert exc.value.code == "user_not_found"
+
+
+async def test_limit_is_applied_after_ranking(ctx: Context) -> None:
+    ctx.interests.user_interests[2] = set()
+    ctx.interests.user_interests[5] = {11}
+    assert [r.user.id for r in await ctx.service.recommend_people(1, 1)] == [5]
+    assert [r.user.id for r in await ctx.service.recommend_people(1, 2)] == [5, 3]
+
+
+@pytest.mark.parametrize("change", ["interests", "office"])
+async def test_concurrent_profile_change_keeps_score_and_explanation_consistent(
+    ctx: Context,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    original = ctx.identity.get_public_profiles
+
+    async def change_before_public_read(user_ids: Sequence[int]) -> dict[int, PublicIdentityOut]:
+        # A concurrent profile/answers update commits between the service's reads.
+        if change == "interests":
+            ctx.interests.user_interests[2] = {12}
+        else:
+            ctx.users.items[2].office_id = 2
+        return await original(user_ids)
+
+    monkeypatch.setattr(ctx.identity, "get_public_profiles", change_before_public_read)
+    row = (await ctx.service.recommend_people(1, 1))[0]
+    assert row.user.id == (3 if change == "interests" else 2)
+    assert row.score == 1.05
+    assert row.same_office is False
+    assert row.user.office.id == 2
+    assert [i.id for i in row.common_interests] == [11]
 
 
 async def test_rank_then_limit_with_location_explanations(ctx: Context) -> None:
