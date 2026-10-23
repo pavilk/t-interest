@@ -105,7 +105,9 @@ PostgreSQL не поддерживает этот символ в текстов
 
 ## Рекомендации людей
 
-Реализован первый этап matching: `GET /api/v1/recommendations/people?limit=20`.
+Реализованы рекомендации людей: `GET /api/v1/recommendations/people?limit=20`,
+создание пары: `POST /api/v1/matches/{user_id}/like` и личный пропуск:
+`POST /api/v1/matches/{user_id}/skip`.
 Нужны access JWT и заполненная анкета; иначе `401` или `403 survey_required`.
 Если пользователь исчез после проверки авторизации — `404 user_not_found`.
 `limit` — целое число 1..20, по умолчанию 20; неверное значение — `422 validation_error`.
@@ -120,8 +122,8 @@ PostgreSQL не поддерживает этот символ в текстов
 при разных офисах, округление до 3 знаков, максимум 1.15. При пустых интересах Jaccard = 0,
 бонус офиса сохраняется. Общий город сам по себе не включает человека в кандидаты.
 SQL отбирает пользователей с заполненной анкетой и общим интересом либо тем же офисом.
-Исключаются сам пользователь, пары с decline любой стороны и исходящие accepted;
-входящий accepted не исключает кандидата. В MVP decline также обозначает блокировку.
+Исключаются сам пользователь, созданные пары (хотя бы один `accepted`) и собственные
+пропуски (`declined`). Чужой пропуск не исключает кандидата и не запрещает создать пару.
 После исключений берутся первые 500 ID, затем top-N по `(-score, user_id)`.
 Это лучшие среди отобранных 500, а не глобальный top-N по всей базе.
 
@@ -129,7 +131,31 @@ SQL отбирает пользователей с заполненной анк
 Офис и одобренные интересы кандидатов загружаются один раз и используются одновременно
 для ранжирования и объяснения результата. Свободные ответы загружаются только для top-N.
 Изменение анкеты или офиса учитывается при следующем запросе, фонового кэша нет.
-Like/decline, список взаимных пар и создание чатов ещё не реализованы.
+Один `like` сразу создаёт пару: ответ `200 {"matched": true, "chat_id": null}`.
+Второму пользователю автоматический `accepted` не выставляется. Повторы с любой
+стороны возвращают ту же пару и не меняют её статусы или сохранённый score.
+Создать пару можно с любым пользователем с заполненной анкетой, даже вне рекомендаций.
+Ошибки действий: `401` без access-токена, `403 survey_required` без своей анкеты,
+`404 user_not_found` для отсутствующего адресата, `409 target_survey_required` без
+анкеты адресата, `422 cannot_match_self` для себя. ID адресата — целое число
+от 1 до 2147483647 (PostgreSQL INTEGER); вне диапазона — `422 validation_error`.
+
+`skip` возвращает `204` без тела и скрывает человека только в собственной выдаче,
+без срока действия. Он идемпотентен; для созданной пары ничего не меняет.
+`like` после собственного пропуска заменяет свой `declined` на `accepted`.
+Пропуск не является блокировкой. Отмена пары и отдельная блокировка пока не реализованы.
+
+Строка `matches` появляется при первом действии. Репозиторий нормализует ID,
+делает `INSERT ... ON CONFLICT DO NOTHING`, затем `SELECT ... FOR UPDATE`;
+блокировка удерживается до завершения транзакции запроса. Score фиксируется при
+первом создании пары, при пропусках до создания пары равен `0`.
+
+Чат пока подключён заглушкой `MatchingService._ensure_direct_chat`: она возвращает
+`None`, реального чата и событий не создаёт. Рядом оставлен закомментированный вызов
+`ChatService.ensure_direct_chat(a, b)` для интеграции. При подключении передать
+ChatService через DI с той же сессией; создание чата должно выполняться и при повторном
+`like` существующей пары, в одной транзакции с matching. События — после commit.
+Отдельного `GET /matches` нет; после интеграции пары будут доступны через список чатов.
 Рекомендации групп относятся к модулю groups.
 
 ## Проверки на PostgreSQL
@@ -234,6 +260,6 @@ SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 |---|---|---|---|
 | **survey — готов** | `SurveyRepository`: активные вопросы, варианты, замена активных ответов с сохранением истории. `InterestRepository`: дерево интересов, замена интересов пользователя | `SurveyService`: `get_survey`, `get_answers`, `submit_answers`, `list_interests`, `get_matching_profile(user_ids)`; модели и Protocol — образец для следующих модулей | Contracts → survey |
 | **chat** | `ChatRepository`: `get_direct_by_key`, `add_chat`, `add_member`, `is_member`, `list_user_chats`, `add_message`, `list_messages(before_id, limit)`, `mark_read` | `ChatService`: `ensure_direct_chat(a, b)` (ключ `"<min>:<max>"`, идемпотентно), `create_group_chat`, `send_message` (проверка членства, текст 1..4000), `list_chats` с unread | Contracts → chat |
-| **matching — рекомендации готовы** | Есть `excluded_user_ids(user_id)`. Для реакций добавить `get_pair(a, b)`, `add` и методы конкурентного изменения пары | Есть чистые `jaccard`, `score` и `MatchingService.recommend_people`. Остались `like`, `decline`, взаимные пары и интеграция chat. Пара всегда `user_a_id < user_b_id` | Contracts → matching, Decisions 4–5 |
+| **matching — люди и действия готовы** | `excluded_user_ids(user_id)`, `get_or_create_for_update(a, b)`; каноническая пара и блокировка строки | `recommend_people`, `like`, `skip`, чистые `jaccard`/`score`. Одного like достаточно; skip личный. Chat — заглушка до интеграции | Contracts → matching, Decisions 4–5 |
 | **groups** | `GroupRepository`: `get`, `get_active_by_interest`, `add`, `list_pending`, `add_member`, `is_member`, `recommend_for_interests` | `GroupService`: `create_request`, `approve`/`reject` (только moderator/admin), `join`, `leave` | Contracts → groups |
 | **search** | `SearchRepository`: `ILIKE` по людям и одобренным группам | `SearchService`: строка ≥ 2 символов, limit 20 | Data flow → 6 |

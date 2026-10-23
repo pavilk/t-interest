@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import NotFoundError
+from app.core.errors import ConflictError, DomainValidationError, NotFoundError
 from app.models import (
     Interest,
     Match,
@@ -144,10 +144,116 @@ async def test_reactions_filter_both_pair_orientations(
 ) -> None:
     ctx.matches.items = [Match(user_a_id=1, user_b_id=2, a_status=a_status, b_status=b_status)]
     own_status = a_status if user_id == 1 else b_status
-    excluded = own_status == MatchStatus.ACCEPTED or MatchStatus.DECLINED in (a_status, b_status)
+    excluded = own_status == MatchStatus.DECLINED or MatchStatus.ACCEPTED in (a_status, b_status)
     ids = {r.user.id for r in await ctx.service.recommend_people(user_id, 20)}
     assert user_id not in ids
     assert ((3 - user_id) in ids) is not excluded
+
+
+@pytest.mark.parametrize(
+    ("actor", "target", "statuses"),
+    [
+        (1, 2, (MatchStatus.ACCEPTED, MatchStatus.PENDING)),
+        (2, 1, (MatchStatus.PENDING, MatchStatus.ACCEPTED)),
+    ],
+)
+async def test_one_like_connects_pair_without_accepting_for_peer(
+    ctx: Context, actor: int, target: int, statuses: tuple[MatchStatus, MatchStatus]
+) -> None:
+    result = await ctx.service.like(actor, target)
+    assert result.model_dump() == {"matched": True, "chat_id": None}
+    (pair,) = ctx.matches.items
+    assert (pair.user_a_id, pair.user_b_id) == (1, 2)
+    assert (pair.a_status, pair.b_status) == statuses
+    assert pair.score == 1.15
+    assert target not in {r.user.id for r in await ctx.service.recommend_people(actor, 20)}
+    assert actor not in {r.user.id for r in await ctx.service.recommend_people(target, 20)}
+
+
+async def test_skip_is_personal_and_peer_can_still_connect(ctx: Context) -> None:
+    await ctx.service.skip(1, 2)
+    await ctx.service.skip(1, 2)
+    (pair,) = ctx.matches.items
+    assert (pair.a_status, pair.b_status, pair.score) == (
+        MatchStatus.DECLINED,
+        MatchStatus.PENDING,
+        0.0,
+    )
+    assert 2 not in {r.user.id for r in await ctx.service.recommend_people(1, 20)}
+    assert 1 in {r.user.id for r in await ctx.service.recommend_people(2, 20)}
+    await ctx.service.like(2, 1)
+    assert (pair.a_status, pair.b_status, pair.score) == (
+        MatchStatus.DECLINED,
+        MatchStatus.ACCEPTED,
+        1.15,
+    )
+
+
+async def test_like_after_own_skip_recalculates_score(ctx: Context) -> None:
+    await ctx.service.skip(1, 2)
+    ctx.interests.user_interests[2] = {12}
+    await ctx.service.like(1, 2)
+    (pair,) = ctx.matches.items
+    assert (pair.a_status, pair.b_status, pair.score) == (
+        MatchStatus.ACCEPTED,
+        MatchStatus.PENDING,
+        0.15,
+    )
+
+
+async def test_repeated_likes_and_skips_keep_original_pair_and_score(ctx: Context) -> None:
+    await ctx.service.like(2, 1)
+    ctx.interests.user_interests[2] = set()
+    for actor, target in [(1, 2), (2, 1)]:
+        await ctx.service.like(actor, target)
+        await ctx.service.skip(actor, target)
+    (pair,) = ctx.matches.items
+    assert (pair.a_status, pair.b_status, pair.score) == (
+        MatchStatus.PENDING,
+        MatchStatus.ACCEPTED,
+        1.15,
+    )
+
+
+async def test_like_allows_target_outside_recommendation_candidates(ctx: Context) -> None:
+    assert 6 not in {r.user.id for r in await ctx.service.recommend_people(1, 20)}
+    result = await ctx.service.like(1, 6)
+    assert result.matched is True
+    (pair,) = ctx.matches.items
+    assert pair.score == 0.05
+
+
+@pytest.mark.parametrize("action", ["like", "skip"])
+@pytest.mark.parametrize(
+    ("target", "error", "code"),
+    [
+        (1, DomainValidationError, "cannot_match_self"),
+        (999, NotFoundError, "user_not_found"),
+        (7, ConflictError, "target_survey_required"),
+    ],
+)
+async def test_invalid_action_does_not_create_pair(
+    ctx: Context, action: str, target: int, error: type[Exception], code: str
+) -> None:
+    with pytest.raises(error) as exc:
+        await getattr(ctx.service, action)(1, target)
+    assert exc.value.code == code
+    assert ctx.matches.items == []
+
+
+async def test_repeated_like_calls_chat_integration_for_existing_pair(
+    ctx: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await ctx.service.like(1, 2)
+
+    async def integrated_chat(user_a: int, user_b: int) -> int:
+        assert (user_a, user_b) == (1, 2)
+        return 42
+
+    monkeypatch.setattr(ctx.service, "_ensure_direct_chat", integrated_chat)
+    result = await ctx.service.like(2, 1)
+    assert result.model_dump() == {"matched": True, "chat_id": 42}
+    assert len(ctx.matches.items) == 1
 
 
 async def test_public_details_only_active_text_and_approved_leaves(ctx: Context) -> None:

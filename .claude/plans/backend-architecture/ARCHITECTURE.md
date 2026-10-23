@@ -24,7 +24,7 @@ content_sha256: bf3e8aca5dee5b11aa56b6e856b5027797438b5bed4c0a3d84a2abf2d6694781
 |---|---|---|---|
 | **identity** | регистрация, вход, JWT, текущий пользователь, профиль, справочник офисов, роли | `users`, `offices` | единственный, кто знает про пароли и токены; другие получают `CurrentUser` через DI |
 | **survey** | активные вопросы, варианты, приём ответов, вывод интересов пользователя, флаг `survey_completed` | `questions`, `answer_options`, `user_answers`, `interests`, `user_interests` | единственный писатель `user_interests`; дерево интересов отдаёт read-only |
-| **matching** | рекомендации людей, реакции like/decline, взаимность | `matches` | читает интересы и офисы через `SurveyService`/`IdentityService`; при взаимности вызывает `ChatService.ensure_direct_chat` |
+| **matching** | рекомендации людей, пара по одному like, личный skip | `matches` | читает интересы и офисы через `SurveyService`/`IdentityService`; chat пока заглушка, будущий вызов `ChatService.ensure_direct_chat` |
 | **groups** | группы, членство, заявки на новые группы, модерация, рекомендации групп | `groups`, `group_members` | создаёт групповой чат через `ChatService.create_group_chat` при одобрении/вступлении |
 | **chat** | чаты, участники, сообщения, непрочитанные, реалтайм-доставка | `chats`, `chat_members`, `messages` | не знает, почему чат создан; проверяет только членство |
 | **search** | поиск людей и одобренных групп по строке | — (читает чужие таблицы) | read-only; единственное разрешённое исключение — собственный `SearchRepository` с SELECT по `users`, `groups`, `interests` |
@@ -85,13 +85,12 @@ Text после strip должен быть непустым; поле огра�
 | Метод | Вход | Выход | Ошибки |
 |---|---|---|---|
 | `GET /recommendations/people` | `limit` (1..20, default 20; без offset) | `[{user: PublicProfile, score, common_interests: [Interest], same_office: bool}]` | `401`, `403 survey_required`, `404 user_not_found` (удаление после авторизации), `422 validation_error` |
-| `POST /matches/{user_id}/like` | — | `{matched: bool, chat_id?: int}` | `404 user_not_found`, `422 cannot_match_self`, `409 already_declined` |
-| `POST /matches/{user_id}/decline` | — | `204` | `404`, `422 cannot_match_self` |
-| `GET /matches` | — | взаимные пары с `chat_id` | — |
+| `POST /matches/{user_id}/like` | — | `{matched: true, chat_id: int \| null}` (сейчас `null`) | `401`, `403 survey_required`, `404 user_not_found`, `422 cannot_match_self` / `validation_error`, `409 target_survey_required` |
+| `POST /matches/{user_id}/skip` | — | `204` без тела | `401`, `403 survey_required`, `404 user_not_found`, `422 cannot_match_self` / `validation_error`, `409 target_survey_required` |
 
-Побочный эффект `like`: upsert строки `matches` (порядок `user_a_id < user_b_id`), выставить свою сторону `accepted`. Если вторая сторона уже `accepted` → `ChatService.ensure_direct_chat(a, b)` в той же транзакции, ответ `matched = true` и `chat_id`. `decline` выставляет свою сторону `declined`; пара исчезает из выдачи обоих навсегда.
+Побочный эффект первого `like`: upsert строки `matches` (порядок `user_a_id < user_b_id`) и `SELECT FOR UPDATE`, выставить только свою сторону `accepted`, зафиксировать текущий score. Одного `accepted` достаточно для пары; ответ всегда `matched = true`. Повторы с любой стороны не меняют статусы и score. `skip` выставляет свою сторону `declined` только пока пара не создана: человек скрывается лишь у нажавшего. Like после пропуска разрешён, чужой пропуск не запрещает пару. Запись только с пропусками имеет score 0. Любое действие требует заполненной анкеты адресата; общие интересы или офис для действия не обязательны. ID положительный.
 
-Реализованы только рекомендации людей. Реакции, взаимные пары и интеграция chat — следующий этап.
+Рекомендации, like и skip реализованы. Создание чата пока заглушка `_ensure_direct_chat` с закомментированным вызовом `ChatService.ensure_direct_chat(a, b)`: `chat_id = null`, чатов и событий нет. При интеграции внедрить ChatService с той же сессией; вызывать его и при повторном like, чтобы создать недостающий чат. Пара и чат сохраняются одной транзакцией, события — после commit. Отдельного `GET /matches` нет; после интеграции используется `GET /chats`.
 `PublicProfile = {id, name, about, office, interests, free_answers}`; email и роль не выдаются.
 `free_answers = [{question_id, question_text, text_value}]` содержит только активные text-вопросы.
 Интересы — одобренные поднаправления с одобренным родителем, по `(name, id)`;
@@ -140,7 +139,7 @@ Text после strip должен быть непустым; поле огра�
    - `{"type": "message", "message": {id, chat_id, sender_id, text, created_at}}` — всем подключённым участникам, включая отправителя;
    - `{"type": "ack", "client_msg_id", "message_id"}` — только отправителю;
    - `{"type": "error", "code", "client_msg_id?"}` — коды `not_member`, `validation_error`, `rate_limited`;
-   - `{"type": "chat_created", "chat": {...}}` — при взаимном матче или вступлении в группу;
+   - `{"type": "chat_created", "chat": {...}}` — при создании пары одним like или вступлении в группу (после интеграции chat);
    - `{"type": "pong"}`.
 4. Истёкший access-токен на открытом соединении не разрывает его; повторная авторизация не требуется до переподключения.
 
@@ -156,8 +155,8 @@ Text после strip должен быть непустым; поле огра�
 ## Data flow
 
 1. **Онбординг.** `POST /auth/register` → `IdentityService` проверяет домен email из `ALLOWED_EMAIL_DOMAINS`, хэширует argon2, создаёт `users` → `TokenPair`. Веб видит `survey_completed = false` в `GET /me` → `GET /survey` → `PUT /survey/answers` → `SurveyService` валидирует, заменяет ответы, пересчитывает `user_interests`, ставит флаг → коммит.
-2. **Рекомендации людей.** `GET /recommendations/people` → `MatchingService`: `MatchRepository` отдаёт id исключений (сам пользователь, любые пары с `declined`, пары, где пользователь уже поставил `accepted`) → профиль текущего пользователя через `SurveyService.get_matching_profile` → `SurveyService.list_matching_candidate_ids` вызывает SQL-префильтр SurveyRepository: заполненная анкета и ≥ 1 общий интерес **или** тот же офис, исключения до лимита 500, порядок по ID → пакетные данные кандидатов через `IdentityService.get_public_profiles` и `SurveyService.get_user_interests` → `score()` на этих данных → сортировка по `(-score, user_id)` → top-N → `SurveyService.get_free_answers` только для выбранных пользователей. Публичный профиль и объяснение используют те же офисы и интересы, что скоринг.
-3. **Матч → чат.** A лайкает B → upsert `matches` (A=accepted). Позже B лайкает A → вторая сторона accepted → `ensure_direct_chat` → коммит → `chat_created` обоим через WS → ответ B `matched = true, chat_id`.
+2. **Рекомендации людей.** `GET /recommendations/people` → `MatchingService`: `MatchRepository` отдаёт id исключений (сам пользователь, пары с любым `accepted`, собственные `declined`) → профиль текущего пользователя через `SurveyService.get_matching_profile` → `SurveyService.list_matching_candidate_ids` вызывает SQL-префильтр SurveyRepository: заполненная анкета и ≥ 1 общий интерес **или** тот же офис, исключения до лимита 500, порядок по ID → пакетные данные кандидатов через `IdentityService.get_public_profiles` и `SurveyService.get_user_interests` → `score()` на этих данных → сортировка по `(-score, user_id)` → top-N → `SurveyService.get_free_answers` только для выбранных пользователей. Публичный профиль и объяснение используют те же офисы и интересы, что скоринг.
+3. **Матч → чат.** A лайкает B → upsert и блокировка `matches` → A=accepted, фиксируется score → заглушка chat → коммит → `{matched: true, chat_id: null}`. После подключения chat заглушка заменяется на `ensure_direct_chat` в той же транзакции; `chat_created` обоим отправляется после commit. Повторный like тоже обеспечивает наличие чата.
 4. **Сообщение.** WS `send` → проверка членства (`ChatRepository.is_member`) → INSERT `messages` → коммит → `ConnectionManager` шлёт `message` всем онлайн-участникам и `ack` отправителю. Офлайн-участники увидят сообщение через `GET /chats` (unread) и `GET /chats/{id}/messages`.
 5. **Новая группа.** `POST /groups` с `new_interest` → создаётся `interests (is_approved = false)` + `groups (pending)` → модератор `GET /moderation/groups` → `approve` → интерес виден, группа видна, групповой чат с автором. Чужие пользователи до одобрения получают 404.
 6. **Поиск.** `GET /search?q=&type=people|groups` → `SearchService` нормализует строку (strip, ≥ 2 символа) → `SearchRepository`: `ILIKE` по `users.name`, `groups.name`, `interests.name` (для групп — также по интересу группы), только `survey_completed` пользователи и `approved` группы, limit 20.
@@ -167,12 +166,12 @@ Text после strip должен быть непустым; поле огра�
 1. **Модульный монолит, один процесс, один воркер uvicorn.** WS-рассылка через in-memory `ConnectionManager: dict[user_id, set[WebSocket]]`. Обоснование: масштаб — одна компания, демо на одном хосте; Redis в стеке отсутствует и не нужен. Путь роста — Postgres `LISTEN/NOTIFY`, не внешний брокер.
 2. **Слои по CLAUDE.md, сервисы зависят от протоколов.** Интерфейсы репозиториев — `typing.Protocol` в `app/repositories/interfaces.py`; сервисы типизированы протоколами, конкретные классы подставляются в `core/deps.py`. Фейки для unit-тестов — в `tests/fakes/`.
 3. **Unit of work = `get_session`.** Одна `AsyncSession` на HTTP-запрос, `commit` после успешного выхода из эндпоинта, `rollback` при исключении. Сервисы вызывают `session.flush()` через репозиторий, если нужен id; `commit` не вызывают. WS — отдельная сессия на сообщение (см. Contracts).
-4. **Рекомендации считаются на лету, `matches` хранит только реакции.** Строка появляется при первом like/decline. Обоснование: нет фоновых задач и инвалидации кэша; на сотнях–тысячах пользователей с SQL-префильтром это миллисекунды.
+4. **Рекомендации считаются на лету, `matches` хранит действия.** Строка появляется при первом like/skip. Score сохраняется при создании пары; в записи только с пропусками он равен 0. Обоснование: нет фоновых задач и инвалидации кэша; на сотнях–тысячах пользователей с SQL-префильтром это миллисекунды.
 5. **Скоринг (`services/matching.py`, чистые функции):** `score = jaccard(interests_a, interests_b) + 0.15 * same_office + 0.05 * (same_city and not same_office)`, округление до 3 знаков. `common_interests` и `same_office` возвращаются в ответе — рекомендация объяснима. Коэффициенты — константы модуля, не конфиг.
 6. **Интересы — дерево из двух уровней** (`interests.parent_id`), матчинг по листьям (поднаправлениям). Пользовательские интересы из заявок на группу получают `is_approved = false` до модерации.
 7. **Вопросы не удаляются.** `questions.is_active`; ответы на неактивные вопросы остаются в БД, но не участвуют в валидации и выдаче.
-8. **Взаимный лайк перед личным чатом** (защита от спама во внутреннем мессенджере). Отказ — односторонний и окончательный для пары. Решение помечено в открытых вопросах как подтверждаемое командой.
-9. **Блокировка в MVP = decline.** Отдельной таблицы блокировок нет; отклонённая пара не видит друг друга в рекомендациях. Пункт CLAUDE.md про «заблокированных» означает именно это.
+8. **Одного like достаточно для пары и будущего личного чата.** Вторая сторона не обязана отвечать. Ответный или повторный like не меняет статусы состоявшейся пары. Chat пока подключён заглушкой.
+9. **Skip — личное скрытие, без срока действия.** Хранится как `declined` своей стороны и не запрещает другой стороне создать пару. Like после skip разрешён; skip созданной пары ничего не меняет. Блокировки и отмена пары — отдельные будущие функции.
 10. **Пароли — argon2** (`pwdlib[argon2]`), JWT — `pyjwt`. Секрет и TTL — в `.env`.
 11. **Поиск — `ILIKE`**, индекс `pg_trgm` добавляется миграцией, когда понадобится. Внешних поисковых движков нет.
 12. **Сиды идемпотентны**: `python -m seeds` делает upsert по естественному ключу (имя интереса + родитель, текст вопроса, город + офис). Только вымышленные данные; демо-пользователи — `user1@example.test` и т.п.
@@ -218,13 +217,14 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml
 - **Скоринг** — unit-тесты чистых функций: пустые множества (Jaccard 0, без деления на ноль; бонус локации сохраняется), полное совпадение = 1.0 + бонус, бонус офиса не суммируется с бонусом города, детерминированная сортировка при равном score.
 - **Сервисы** (фейковые репозитории):
   - survey: каждое правило валидации даёт свой код ошибки; повторный `PUT` полностью заменяет ответы и интересы; `survey_completed` выставляется только при полном наборе обязательных;
-  - matching: себя, отклонённых и уже лайкнутых нет в выдаче; второй like создаёт ровно один чат, третий не создаёт новый; like после decline → `409`;
+  - matching: один like создаёт пару, автоматического accepted у второй стороны нет; оба исчезают из рекомендаций; skip скрывает только у себя; like после skip разрешён; повторы сохраняют score и статусы; chat_id пока null;
   - groups: вторая заявка на тот же интерес → `409`; `approve` не-модератором → `403`; `pending` группа недоступна чужим;
   - chat: не-участник не читает и не пишет.
 - **Репозитории** (тестовая PostgreSQL, транзакция на тест с откатом): ограничения схемы реально срабатывают — CHECK порядка в `matches`, UNIQUE `direct_key`, частичный UNIQUE групп, CHECK `user_answers`.
 - **API** (`httpx.AsyncClient` + тестовая БД): каждый защищённый эндпоинт без токена → `401`; эндпоинты после анкеты без анкеты → `403 survey_required`; формат ошибок единый.
 - **WebSocket** (`TestClient.websocket_connect`): без `auth` за 5 с → закрытие `4401`; сообщение доходит второму участнику и `ack` отправителю; `send` в чужой чат → `error not_member`, в БД ничего не записано.
-- **Сквозной сценарий приёмки** — один API-тест: регистрация двух пользователей → анкеты с общим интересом → взаимные лайки → обмен сообщением через WS → `GET /chats` показывает чат и unread.
+- **Сквозной сценарий matching** — регистрация двух пользователей → анкеты с общим интересом → один like → пара сохранена, оба исключены из рекомендаций. После интеграции chat: обмен сообщением через WS → `GET /chats` показывает чат и unread.
+- **Конкурентность matching** — параллельные like/like, like/skip, skip/skip дают одну каноническую строку; like сохраняет пару, skip не разрывает её. Ошибка интеграции или commit откатывает создание и изменение пары.
 - **Безопасность**: тест, что логи запроса регистрации и отправки сообщения не содержат email и текст (caplog); `.env` в `.gitignore`.
 - **OpenAPI**: `GET /openapi.json` генерируется без ошибок; схемы ответов объявлены через `response_model`.
 
@@ -245,7 +245,6 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml
 
 | Вопрос | Владелец | Текущее допущение |
 |---|---|---|
-| Писать человеку сразу или только после взаимного лайка | команда + заказчик | после взаимного (решение 8) |
 | Выдача людей: карточки или список | команда (веб) | API отдаёт список top-N; карточки строятся на клиенте из того же ответа |
 | Что именно ищет поиск | команда | люди по имени, группы по названию и интересу |
 | Состав анкеты кроме интересов, кто пишет список интересов | команда | сиды с вымышленным черновиком, правится PR-ом |
@@ -260,7 +259,7 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml
 2. **identity:** модели `users`/`offices`, регистрация/вход/refresh/`/me`, `get_current_user`, `require_survey_completed`, сиды офисов.
 3. **survey:** модели анкеты и интересов, `SurveyService` с валидацией, `PUT /survey/answers`, сиды вопросов и интересов. *Ближайшая цель к синку.*
 4. **chat:** модели чатов, REST-история, `ConnectionManager`, WS-протокол, буфер событий после коммита. *Начать к синку.*
-5. **matching:** скоринг + тесты, рекомендации людей, like/decline, `ensure_direct_chat`.
+5. **matching:** скоринг + тесты, рекомендации людей, like/skip, заглушка `ensure_direct_chat`; подключение chat отдельным этапом.
 6. **groups + moderation:** заявки, модерация, вступление, рекомендации групп.
 7. **search** и сквозной тест приёмки.
 

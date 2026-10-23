@@ -13,7 +13,7 @@
 from collections.abc import Sequence
 from typing import Protocol
 
-from app.models import AnswerOption, Interest, Office, Question, User, UserAnswer
+from app.models import AnswerOption, Interest, Match, Office, Question, User, UserAnswer
 
 
 class UserRepository(Protocol):
@@ -62,6 +62,8 @@ class InterestRepository(Protocol):
 
 class MatchRepository(Protocol):
     async def excluded_user_ids(self, user_id: int) -> set[int]: ...
+
+    async def get_or_create_for_update(self, user_a: int, user_b: int) -> Match: ...
 
 
 # TODO: GroupRepository, ChatRepository —

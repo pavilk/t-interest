@@ -9,7 +9,7 @@ from app.core import db
 from app.core.config import Settings, get_settings
 from app.core.security import create_token
 from app.main import create_app
-from app.models import Match, Office, User, UserInterest
+from app.models import Match, MatchStatus, Office, User, UserInterest
 from app.schemas.user import PublicIdentityOut
 from app.services.identity import IdentityService
 from seeds.__main__ import seed
@@ -67,7 +67,7 @@ async def test_concurrent_commit_keeps_score_and_public_profile_consistent(
     assert [i["id"] for i in row["user"]["interests"]] == ([12] if change == "interests" else [11])
 
 
-async def test_onboarding_recommendations_and_profile_changes(
+async def test_onboarding_recommendations_profile_changes_and_pair(
     pg_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -161,8 +161,21 @@ async def test_onboarding_recommendations_and_profile_changes(
         assert result[0]["score"] == 0.15
         assert result[0]["common_interests"] == []
         assert result[0]["user"]["free_answers"] == []
+        async with pg_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(Match)) == 0
+        response = await client.post(f"/api/v1/matches/{ids[1]}/like", headers=auth[0])
+        assert response.status_code == 200
+        assert response.json() == {"matched": True, "chat_id": None}
+        for headers in auth:
+            assert (await client.get(PATH, headers=headers)).json() == []
     async with pg_factory() as session:
-        assert await session.scalar(select(func.count()).select_from(Match)) == 0
+        pair = (await session.scalars(select(Match))).one()
+        assert (pair.user_a_id, pair.user_b_id) == (ids[0], ids[1])
+        assert (pair.a_status, pair.b_status, pair.score) == (
+            MatchStatus.ACCEPTED,
+            MatchStatus.PENDING,
+            0.15,
+        )
 
 
 async def test_query_count_does_not_grow_per_recommended_person(

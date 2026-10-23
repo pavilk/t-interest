@@ -1,6 +1,7 @@
-from app.core.errors import NotFoundError
+from app.core.errors import ConflictError, DomainValidationError, NotFoundError
+from app.models import MatchStatus
 from app.repositories.interfaces import MatchRepository
-from app.schemas.matching import PersonRecommendationOut
+from app.schemas.matching import LikeOut, PersonRecommendationOut
 from app.schemas.survey import MatchingProfile
 from app.schemas.user import PublicProfile
 from app.services.identity import IdentityService
@@ -30,6 +31,44 @@ class MatchingService:
         self._matches = matches
         self._survey = survey
         self._identity = identity
+
+    async def like(self, user_id: int, target_id: int) -> LikeOut:
+        await self._validate_target(user_id, target_id)
+        pair = await self._matches.get_or_create_for_update(user_id, target_id)
+        if MatchStatus.ACCEPTED not in (pair.a_status, pair.b_status):
+            profiles = await self._survey.get_matching_profile([user_id, target_id])
+            if user_id not in profiles or target_id not in profiles:
+                raise NotFoundError("user_not_found", "Пользователь не найден")
+            pair.score = score(profiles[user_id], profiles[target_id])
+            if user_id == pair.user_a_id:
+                pair.a_status = MatchStatus.ACCEPTED
+            else:
+                pair.b_status = MatchStatus.ACCEPTED
+        # В том числе при повторе: после интеграции создаст недостающий чат.
+        chat_id = await self._ensure_direct_chat(pair.user_a_id, pair.user_b_id)
+        return LikeOut(chat_id=chat_id)
+
+    async def skip(self, user_id: int, target_id: int) -> None:
+        await self._validate_target(user_id, target_id)
+        pair = await self._matches.get_or_create_for_update(user_id, target_id)
+        if MatchStatus.ACCEPTED in (pair.a_status, pair.b_status):
+            return
+        if user_id == pair.user_a_id:
+            pair.a_status = MatchStatus.DECLINED
+        else:
+            pair.b_status = MatchStatus.DECLINED
+
+    async def _validate_target(self, user_id: int, target_id: int) -> None:
+        if user_id == target_id:
+            raise DomainValidationError("cannot_match_self", "Нельзя создать пару с самим собой")
+        if not await self._identity.has_completed_survey(target_id):
+            raise ConflictError("target_survey_required", "Пользователь ещё не заполнил анкету")
+
+    async def _ensure_direct_chat(self, user_a: int, user_b: int) -> int | None:
+        """Временная заглушка до подключения модуля chat."""
+        # TODO(chat): внедрить ChatService через DI с той же SessionDep.
+        # return await self._chat.ensure_direct_chat(user_a, user_b)
+        return None
 
     async def recommend_people(self, user_id: int, limit: int) -> list[PersonRecommendationOut]:
         excluded = await self._matches.excluded_user_ids(user_id)

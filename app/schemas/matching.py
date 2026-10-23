@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.schemas.survey import InterestOut
@@ -9,3 +11,8 @@ class PersonRecommendationOut(BaseModel):
     score: float
     common_interests: list[InterestOut]
     same_office: bool
+
+
+class LikeOut(BaseModel):
+    matched: Literal[True] = True
+    chat_id: int | None = None

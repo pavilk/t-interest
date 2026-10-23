@@ -9,6 +9,22 @@ from app.repositories.survey import SqlSurveyRepository
 pytestmark = pytest.mark.postgres
 
 
+async def test_pair_is_normalized_locked_and_not_committed_by_repository(
+    pg_data: async_sessionmaker[AsyncSession],
+) -> None:
+    async with pg_data() as session:
+        repo = SqlMatchRepository(session)
+        pair = await repo.get_or_create_for_update(2, 1)
+        assert (pair.user_a_id, pair.user_b_id, pair.score) == (1, 2, 0.0)
+        assert (pair.a_status, pair.b_status) == (MatchStatus.PENDING, MatchStatus.PENDING)
+        assert await repo.get_or_create_for_update(1, 2) is pair
+        async with pg_data() as observer:
+            assert list(await observer.scalars(select(Match))) == []
+        await session.rollback()
+    async with pg_data() as session:
+        assert list(await session.scalars(select(Match))) == []
+
+
 async def test_batch_active_text_answers(pg_data: async_sessionmaker[AsyncSession]) -> None:
     async with pg_data.begin() as session:
         session.add_all(
@@ -41,7 +57,7 @@ async def test_excluded_users(
         )
     async with pg_data() as session:
         own = a_status if user_id == 1 else b_status
-        excluded = own == MatchStatus.ACCEPTED or MatchStatus.DECLINED in (a_status, b_status)
+        excluded = own == MatchStatus.DECLINED or MatchStatus.ACCEPTED in (a_status, b_status)
         assert await SqlMatchRepository(session).excluded_user_ids(user_id) == (
             {1, 2} if excluded else {user_id}
         )

@@ -14,9 +14,10 @@ class MatchStatus(StrEnum):
 
 
 class Match(Base):
-    """Реакции пары. Строка появляется при первом like/decline одной из сторон.
+    """Действия пары. Строка появляется при первом like/skip одной из сторон.
 
-    Всегда user_a_id < user_b_id. Пара взаимная, когда оба статуса accepted.
+    Всегда user_a_id < user_b_id. Одного accepted достаточно для создания пары;
+    declined скрывает кандидата только у соответствующего пользователя.
     """
 
     __tablename__ = "matches"

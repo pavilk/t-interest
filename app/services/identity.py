@@ -86,6 +86,9 @@ class IdentityService:
     async def list_offices(self) -> list[OfficeOut]:
         return [OfficeOut.model_validate(o) for o in await self._offices.list_all()]
 
+    async def has_completed_survey(self, user_id: int) -> bool:
+        return (await self._get_user(user_id)).survey_completed
+
     async def lock_for_survey(self, user_id: int) -> None:
         if await self._users.get_by_id_for_update(user_id) is None:
             raise NotFoundError("user_not_found", "Пользователь не найден")

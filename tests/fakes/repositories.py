@@ -149,9 +149,25 @@ class FakeMatchRepository:
             if user_id not in (match.user_a_id, match.user_b_id):
                 continue
             own = match.a_status if user_id == match.user_a_id else match.b_status
-            if own == MatchStatus.ACCEPTED or MatchStatus.DECLINED in (
+            if own == MatchStatus.DECLINED or MatchStatus.ACCEPTED in (
                 match.a_status,
                 match.b_status,
             ):
                 result.add(match.user_b_id if user_id == match.user_a_id else match.user_a_id)
         return result
+
+    async def get_or_create_for_update(self, user_a: int, user_b: int) -> Match:
+        user_a, user_b = sorted((user_a, user_b))
+        for pair in self.items:
+            if (pair.user_a_id, pair.user_b_id) == (user_a, user_b):
+                return pair
+        pair = Match(
+            id=len(self.items) + 1,
+            user_a_id=user_a,
+            user_b_id=user_b,
+            score=0.0,
+            a_status=MatchStatus.PENDING,
+            b_status=MatchStatus.PENDING,
+        )
+        self.items.append(pair)
+        return pair
