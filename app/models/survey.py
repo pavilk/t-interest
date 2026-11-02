@@ -1,4 +1,6 @@
 from enum import StrEnum
+from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import (
     CheckConstraint,
@@ -9,6 +11,7 @@ from sqlalchemy import (
     func,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, str_enum
@@ -59,12 +62,29 @@ class Question(Base):
     """Вопросы не удаляются, а выключаются через is_active."""
 
     __tablename__ = "questions"
+    __table_args__ = (CheckConstraint("stage BETWEEN 1 AND 3", name="valid_stage"),)
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("code", f"legacy_{kwargs['id']}" if "id" in kwargs else uuid4().hex)
+        kwargs.setdefault("stage", 1)
+        kwargs.setdefault("is_required", kwargs.get("type") != QuestionType.TEXT)
+        super().__init__(**kwargs)
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True)
     text: Mapped[str] = mapped_column(String(500))
     type: Mapped[QuestionType] = mapped_column(str_enum(QuestionType, "question_type"))
     order: Mapped[int]
     is_active: Mapped[bool] = mapped_column(server_default=true())
+    stage: Mapped[int] = mapped_column(server_default="1")
+    is_required: Mapped[bool]
+    show_if_option_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "answer_options.id",
+            use_alter=True,
+            name="fk_questions_show_if_option_id_answer_options",
+        )
+    )
 
 
 class AnswerOption(Base):
@@ -90,3 +110,12 @@ class UserAnswer(Base):
     question_id: Mapped[int] = mapped_column(ForeignKey("questions.id"))
     option_id: Mapped[int | None] = mapped_column(ForeignKey("answer_options.id"))
     text_value: Mapped[str | None] = mapped_column(String(300))
+
+
+class SurveyMigrationState(Base):
+    """Configuration-only journal for reversible catalogue migrations; no user answers."""
+
+    __tablename__ = "survey_migration_state"
+
+    revision: Mapped[str] = mapped_column(String(32), primary_key=True)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB)

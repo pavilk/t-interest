@@ -29,11 +29,22 @@ class SurveyService:
     async def get_survey(self) -> list[QuestionOut]:
         questions = await self._surveys.list_active_questions()
         options = await self._surveys.list_options([q.id for q in questions])
+        self._condition_order({q.id: q for q in questions}, {o.id: o for o in options})
         by_question: dict[int, list[AnswerOptionOut]] = defaultdict(list)
         for option in sorted(options, key=lambda o: (o.order, o.id)):
             by_question[option.question_id].append(AnswerOptionOut.model_validate(option))
         return [
-            QuestionOut(id=q.id, text=q.text, type=q.type, order=q.order, options=by_question[q.id])
+            QuestionOut(
+                id=q.id,
+                code=q.code,
+                text=q.text,
+                type=q.type,
+                order=q.order,
+                stage=q.stage,
+                is_required=q.is_required,
+                show_if_option_id=q.show_if_option_id,
+                options=by_question[q.id],
+            )
             for q in sorted(questions, key=lambda q: (q.order, q.id))
         ]
 
@@ -66,6 +77,27 @@ class SurveyService:
         if not any(q.type != QuestionType.TEXT for q in questions.values()):
             raise ConflictError("survey_not_configured", "Анкета пока не настроена")
         options = {o.id: o for o in await self._surveys.list_options(list(questions))}
+        condition_order = self._condition_order(questions, options)
+        submitted: dict[int, SurveyAnswer] = {}
+        for answer in answers:
+            if answer.question_id not in questions:
+                raise DomainValidationError("unknown_question", "Вопрос недоступен")
+            if answer.question_id in submitted:
+                raise DomainValidationError("duplicate_question", "Вопрос передан несколько раз")
+            submitted[answer.question_id] = answer
+        applicable: set[int] = set()
+        selected: set[int] = set()
+        for question_id in condition_order:
+            question = questions[question_id]
+            trigger = question.show_if_option_id
+            if trigger is None or (
+                options[trigger].question_id in applicable and trigger in selected
+            ):
+                applicable.add(question_id)
+                if question_id in submitted:
+                    selected.update(submitted[question_id].option_ids or [])
+        if any(question_id not in applicable for question_id in submitted):
+            raise DomainValidationError("question_not_applicable", "Вопрос скрыт текущим выбором")
         approved = {i.id: i for i in await self._interests.list_approved()}
         leaves = {
             i.id
@@ -74,14 +106,8 @@ class SurveyService:
         }
         rows: list[UserAnswer] = []
         interest_ids: set[int] = set()
-        seen: set[int] = set()
         for answer in answers:
-            question = questions.get(answer.question_id)
-            if question is None:
-                raise DomainValidationError("unknown_question", "Вопрос недоступен")
-            if question.id in seen:
-                raise DomainValidationError("duplicate_question", "Вопрос передан несколько раз")
-            seen.add(question.id)
+            question = questions[answer.question_id]
             chosen = self._validate_answer(question, answer, options)
             for option in chosen:
                 if option.interest_id is not None:
@@ -105,13 +131,46 @@ class SurveyService:
                         text_value=(answer.text_value or "").strip(),
                     )
                 )
-        if any(q.id not in seen and q.type != QuestionType.TEXT for q in questions.values()):
+        if any(
+            q.id in applicable and q.is_required and q.id not in submitted
+            for q in questions.values()
+        ):
             raise DomainValidationError(
                 "required_question_missing", "Ответьте на обязательные вопросы"
             )
         await self._surveys.replace_active_answers(user_id, list(questions), rows)
         await self._interests.replace_user_interests(user_id, interest_ids)
         return await self._identity.mark_survey_completed(user_id)
+
+    @staticmethod
+    def _condition_order(
+        questions: dict[int, Question], options: dict[int, AnswerOption]
+    ) -> list[int]:
+        """Validate the dependency graph and return parents before their children."""
+        order: list[int] = []
+        visiting: set[int] = set()
+        done: set[int] = set()
+
+        def visit(question_id: int) -> None:
+            if question_id in visiting:
+                raise ConflictError("survey_not_configured", "Цикл условий анкеты")
+            if question_id in done:
+                return
+            visiting.add(question_id)
+            trigger = questions[question_id].show_if_option_id
+            if trigger is not None:
+                option = options.get(trigger)
+                parent = questions.get(option.question_id) if option else None
+                if parent is None or parent.type == QuestionType.TEXT:
+                    raise ConflictError("survey_not_configured", "Некорректное условие анкеты")
+                visit(parent.id)
+            visiting.remove(question_id)
+            done.add(question_id)
+            order.append(question_id)
+
+        for question_id in questions:
+            visit(question_id)
+        return order
 
     @staticmethod
     def _validate_answer(

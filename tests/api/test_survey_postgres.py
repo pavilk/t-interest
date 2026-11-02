@@ -223,11 +223,9 @@ async def test_registration_to_seeded_survey_and_repeated_seed(
         auth = {"Authorization": "Bearer " + response.json()["access_token"]}
         assert not (await client.get("/api/v1/me", headers=auth)).json()["survey_completed"]
         survey = (await client.get("/api/v1/survey", headers=auth)).json()
-        answers = [
-            {"question_id": q["id"], "option_ids": [q["options"][0]["id"]]}
-            for q in survey
-            if q["type"] != "text"
-        ]
+        direction = next(q for q in survey if q["code"] == "v2_directions")
+        ecology = next(o for o in direction["options"] if o["text"] == "Экология")
+        answers = [{"question_id": direction["id"], "option_ids": [ecology["id"]]}]
         response = await client.put("/api/v1/survey/answers", headers=auth, json=answers)
         assert response.status_code == 200 and response.json()["survey_completed"] is True
         before = (await client.get("/api/v1/survey/answers", headers=auth)).json()

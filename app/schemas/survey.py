@@ -26,9 +26,13 @@ class AnswerOptionOut(BaseModel):
 
 class QuestionOut(BaseModel):
     id: int
+    code: str
     text: str
     type: QuestionType
     order: int
+    stage: int
+    is_required: bool
+    show_if_option_id: int | None
     options: list[AnswerOptionOut]
 
 

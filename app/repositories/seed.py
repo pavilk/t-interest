@@ -37,10 +37,28 @@ class SqlSeedRepository:
             await self._session.flush()
         return interest
 
-    async def ensure_question(self, text: str, question_type: QuestionType, order: int) -> Question:
-        question = await self._session.scalar(select(Question).where(Question.text == text))
+    async def ensure_question(
+        self,
+        code: str,
+        text: str,
+        question_type: QuestionType,
+        order: int,
+        stage: int,
+        is_required: bool,
+        show_if_option_id: int | None,
+    ) -> Question:
+        question = await self._session.scalar(select(Question).where(Question.code == code))
         if question is None:
-            question = Question(text=text, type=question_type, order=order, is_active=True)
+            question = Question(
+                code=code,
+                text=text,
+                type=question_type,
+                order=order,
+                is_active=True,
+                stage=stage,
+                is_required=is_required,
+                show_if_option_id=show_if_option_id,
+            )
             self._session.add(question)
             await self._session.flush()
         return question

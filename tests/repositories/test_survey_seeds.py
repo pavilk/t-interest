@@ -35,5 +35,5 @@ async def test_seeds_repeat_without_duplicates_or_reactivation(
         assert await snapshot(session) == before
         question = await session.get(Question, question_id)
         assert question is not None and not question.is_active
-        assert len(before["questions"]) == 3
-        assert len(before["interests"]) == 6
+        assert len(before["questions"]) == 10
+        assert len(before["interests"]) == 20
