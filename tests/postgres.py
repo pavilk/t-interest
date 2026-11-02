@@ -1,5 +1,6 @@
 """Shared fictional PostgreSQL fixtures; never connects without TEST_DATABASE_URL."""
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -22,6 +23,10 @@ def survey_service(session: AsyncSession, settings: Settings) -> SurveyService:
 
 async def populate(factory: async_sessionmaker[AsyncSession]) -> None:
     async with factory.begin() as session:
+        # This fixture tests an isolated synthetic survey, independent of the v2 catalogue.
+        await session.execute(text("UPDATE questions SET show_if_option_id=NULL"))
+        for table in ("answer_options", "questions", "interests", "survey_migration_state"):
+            await session.execute(text(f"DELETE FROM {table}"))
         session.add(Office(id=1, city="Тестовый город", name="Тестовый офис"))
         session.add(Interest(id=10, name="Спорт", parent_id=None))
         session.add_all(

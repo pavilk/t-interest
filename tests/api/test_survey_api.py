@@ -88,3 +88,5 @@ async def test_openapi_contract(client: AsyncClient) -> None:
     assert {"401", "409", "422"} <= put["responses"].keys()
     text = schema["components"]["schemas"]["SurveyAnswer"]["properties"]["text_value"]
     assert any(branch.get("maxLength") == 300 for branch in text["anyOf"])
+    question = schema["components"]["schemas"]["QuestionOut"]
+    assert {"code", "stage", "is_required", "show_if_option_id"} <= set(question["required"])

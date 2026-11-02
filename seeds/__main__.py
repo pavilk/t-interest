@@ -3,6 +3,7 @@ import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session_factory
+from app.models import QuestionType
 from app.repositories.seed import SqlSeedRepository
 from seeds.data import INTERESTS, OFFICES, QUESTIONS
 
@@ -18,12 +19,22 @@ async def seed(session: AsyncSession) -> None:
         for name in children:
             child = await repository.ensure_interest(name, root.id)
             interests[(direction, name)] = child.id
-    for order, (text, question_type, options) in enumerate(QUESTIONS, start=1):
-        question = await repository.ensure_question(text, question_type, order)
+    option_ids: dict[tuple[str, str], int] = {}
+    for order, (code, text, kind, stage, required, trigger, options) in enumerate(QUESTIONS, 1):
+        question = await repository.ensure_question(
+            code,
+            text,
+            QuestionType(kind),
+            order,
+            stage,
+            required,
+            option_ids[trigger] if trigger else None,
+        )
         for option_order, (label, interest) in enumerate(options, start=1):
-            await repository.ensure_option(
+            option = await repository.ensure_option(
                 question.id, label, option_order, interests[interest] if interest else None
             )
+            option_ids[(code, label)] = option.id
 
 
 async def main() -> None:
