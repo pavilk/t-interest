@@ -19,14 +19,17 @@ from app.models import User
 from app.repositories.interest import SqlInterestRepository
 from app.repositories.interfaces import (
     InterestRepository,
+    MatchRepository,
     OfficeRepository,
     SurveyRepository,
     UserRepository,
 )
+from app.repositories.match import SqlMatchRepository
 from app.repositories.office import SqlOfficeRepository
 from app.repositories.survey import SqlSurveyRepository
 from app.repositories.user import SqlUserRepository
 from app.services.identity import IdentityService
+from app.services.matching import MatchingService
 from app.services.survey import SurveyService
 
 # scope="function": commit в get_session выполняется до отправки ответа, а не после
@@ -80,6 +83,22 @@ def get_survey_service(
 
 
 SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
+
+
+def get_match_repository(session: SessionDep) -> MatchRepository:
+    return SqlMatchRepository(session)
+
+
+MatchRepositoryDep = Annotated[MatchRepository, Depends(get_match_repository)]
+
+
+def get_matching_service(
+    matches: MatchRepositoryDep, survey: SurveyServiceDep, identity: IdentityServiceDep
+) -> MatchingService:
+    return MatchingService(matches, survey, identity)
+
+
+MatchingServiceDep = Annotated[MatchingService, Depends(get_matching_service)]
 
 
 # --- текущий пользователь ---

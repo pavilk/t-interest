@@ -11,7 +11,7 @@ from app.core.security import create_token, decode_token, hash_password, verify_
 from app.models import Office, User, UserRole
 from app.repositories.interfaces import OfficeRepository, UserRepository
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenPair
-from app.schemas.user import MeOut, OfficeOut, UpdateMeRequest
+from app.schemas.user import MeOut, OfficeOut, PublicIdentityOut, UpdateMeRequest
 
 # Хэш для сравнения, когда пользователя нет: вход по несуществующему email
 # занимает столько же времени, сколько по существующему.
@@ -86,6 +86,9 @@ class IdentityService:
     async def list_offices(self) -> list[OfficeOut]:
         return [OfficeOut.model_validate(o) for o in await self._offices.list_all()]
 
+    async def has_completed_survey(self, user_id: int) -> bool:
+        return (await self._get_user(user_id)).survey_completed
+
     async def lock_for_survey(self, user_id: int) -> None:
         if await self._users.get_by_id_for_update(user_id) is None:
             raise NotFoundError("user_not_found", "Пользователь не найден")
@@ -101,6 +104,21 @@ class IdentityService:
         users = await self._users.list_by_ids(user_ids)
         offices = {office.id: office for office in await self._offices.list_all()}
         return {user.id: (user.office_id, offices[user.office_id].city) for user in users}
+
+    async def get_public_profiles(self, user_ids: Sequence[int]) -> dict[int, PublicIdentityOut]:
+        if not user_ids:
+            return {}
+        users = await self._users.list_by_ids(user_ids)
+        offices = {office.id: office for office in await self._offices.list_all()}
+        return {
+            user.id: PublicIdentityOut(
+                id=user.id,
+                name=user.name,
+                about=user.about,
+                office=OfficeOut.model_validate(offices[user.office_id]),
+            )
+            for user in users
+        }
 
     async def _get_user(self, user_id: int) -> User:
         user = await self._users.get_by_id(user_id)
