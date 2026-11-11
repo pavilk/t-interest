@@ -84,7 +84,7 @@ Text после strip должен быть непустым; поле огра�
 
 | Метод | Вход | Выход | Ошибки |
 |---|---|---|---|
-| `GET /recommendations/people` | `limit` (1..20, default 20; без offset) | `[{user: PublicProfile, score, common_interests: [Interest], same_office: bool}]` | `401`, `403 survey_required`, `404 user_not_found` (удаление после авторизации), `422 validation_error` |
+| `GET /recommendations/people` | `limit` (1..20, default 20; без offset) | `[{user: PublicProfile, score, common_interests: [Interest], common_categories: [Interest], same_office: bool}]` | `401`, `403 survey_required`, `404 user_not_found` (удаление после авторизации), `422 validation_error` |
 | `POST /matches/{user_id}/like` | — | `{matched: true, chat_id: int \| null}` (сейчас `null`) | `401`, `403 survey_required`, `404 user_not_found`, `422 cannot_match_self` / `validation_error`, `409 target_survey_required` |
 | `POST /matches/{user_id}/skip` | — | `204` без тела | `401`, `403 survey_required`, `404 user_not_found`, `422 cannot_match_self` / `validation_error`, `409 target_survey_required` |
 
@@ -95,8 +95,11 @@ Text после strip должен быть непустым; поле огра�
 `free_answers = [{question_id, question_text, text_value}]` содержит только активные text-вопросы.
 Интересы — одобренные поднаправления с одобренным родителем, по `(name, id)`;
 свободные ответы — по `(question.order, question.id)`.
-Префильтр применяет исключения до лимита 500 и берёт кандидатов по ID по возрастанию.
-Затем сортировка по `(-score, user_id)` и top-N; это не глобальный top-N всей базы.
+`common_categories` содержит общие одобренные категории из активного `v2_directions`
+в порядке `(name, id)`.
+Префильтр применяет исключения до лимита 500 и отдаёт приоритет общему поднаправлению,
+сортируя кандидатов внутри каждого приоритета по ID. Затем применяется top-N по
+`(-score, user_id)` внутри этого пула.
 Данные загружаются пакетно через сервисы survey/identity. Офис и одобренные интересы кандидатов
 фиксируются один раз для скоринга, ранжирования и публичного профиля; повторного чтения этих
 полей после ранжирования нет. Свободные ответы загружаются только для top-N.
@@ -150,12 +153,12 @@ Text после strip должен быть непустым; поле огра�
 - `ChatService.ensure_direct_chat(user_a, user_b) -> Chat` — идемпотентно: существующий личный чат пары или новый. Уникальность обеспечивается колонкой `chats.direct_key = "<min>:<max>"` с UNIQUE.
 - `ChatService.create_group_chat(group_id, member_ids) -> Chat`; `ChatService.add_member(chat_id, user_id)`; `remove_member`.
 - `ChatService` после коммита публикует события в `Notifier` (интерфейс в `services/`, реализация `ConnectionManager` в `api/ws.py`); в HTTP-запросах события копятся в per-request буфере и отправляются после `commit` в `get_session`.
-- `SurveyService.get_matching_profile(user_ids) -> dict[int, MatchingProfile]` — интересы и локация текущего пользователя для префильтра и скоринга. Интересы кандидатов — через `SurveyService.get_user_interests(user_ids)`, свободные ответы выбранных пользователей — через `get_free_answers(user_ids)`; данные анкеты matching читает только через SurveyService.
+- `SurveyService.get_matching_profile(user_ids) -> dict[int, MatchingProfile]` загружает интересы, категории и локацию для префильтра и скоринга. Поднаправления и категории кандидатов загружает `SurveyService.get_matching_interests(user_ids)`, свободные ответы выбранных пользователей загружает `get_free_answers(user_ids)`.
 
 ## Data flow
 
 1. **Онбординг.** `POST /auth/register` → `IdentityService` проверяет домен email из `ALLOWED_EMAIL_DOMAINS`, хэширует argon2, создаёт `users` → `TokenPair`. Веб видит `survey_completed = false` в `GET /me` → `GET /survey` → `PUT /survey/answers` → `SurveyService` валидирует, заменяет ответы, пересчитывает `user_interests`, ставит флаг → коммит.
-2. **Рекомендации людей.** `GET /recommendations/people` → `MatchingService`: `MatchRepository` отдаёт id исключений (сам пользователь, пары с любым `accepted`, собственные `declined`) → профиль текущего пользователя через `SurveyService.get_matching_profile` → `SurveyService.list_matching_candidate_ids` вызывает SQL-префильтр SurveyRepository: заполненная анкета и ≥ 1 общий интерес **или** тот же офис, исключения до лимита 500, порядок по ID → пакетные данные кандидатов через `IdentityService.get_public_profiles` и `SurveyService.get_user_interests` → `score()` на этих данных → сортировка по `(-score, user_id)` → top-N → `SurveyService.get_free_answers` только для выбранных пользователей. Публичный профиль и объяснение используют те же офисы и интересы, что скоринг.
+2. **Рекомендации людей.** `MatchingService` загружает исключения из `MatchRepository` и профиль текущего пользователя из `SurveyService`. SQL отбирает кандидатов с заполненной анкетой и общим поднаправлением, общей категорией или тем же офисом. Из подходящих кандидатов берутся до 500 с приоритетом общего поднаправления. Офисы загружаются через `IdentityService.get_public_profiles`, поднаправления и категории через `SurveyService.get_matching_interests`. Эти данные идут в `score()` и в ответ. После сортировки по `(-score, user_id)` свободные ответы загружаются только для top-N.
 3. **Матч → чат.** A лайкает B → upsert и блокировка `matches` → A=accepted, фиксируется score → заглушка chat → коммит → `{matched: true, chat_id: null}`. После подключения chat заглушка заменяется на `ensure_direct_chat` в той же транзакции; `chat_created` обоим отправляется после commit. Повторный like тоже обеспечивает наличие чата.
 4. **Сообщение.** WS `send` → проверка членства (`ChatRepository.is_member`) → INSERT `messages` → коммит → `ConnectionManager` шлёт `message` всем онлайн-участникам и `ack` отправителю. Офлайн-участники увидят сообщение через `GET /chats` (unread) и `GET /chats/{id}/messages`.
 5. **Новая группа.** `POST /groups` с `new_interest` → создаётся `interests (is_approved = false)` + `groups (pending)` → модератор `GET /moderation/groups` → `approve` → интерес виден, группа видна, групповой чат с автором. Чужие пользователи до одобрения получают 404.
@@ -167,8 +170,8 @@ Text после strip должен быть непустым; поле огра�
 2. **Слои по CLAUDE.md, сервисы зависят от протоколов.** Интерфейсы репозиториев — `typing.Protocol` в `app/repositories/interfaces.py`; сервисы типизированы протоколами, конкретные классы подставляются в `core/deps.py`. Фейки для unit-тестов — в `tests/fakes/`.
 3. **Unit of work = `get_session`.** Одна `AsyncSession` на HTTP-запрос, `commit` после успешного выхода из эндпоинта, `rollback` при исключении. Сервисы вызывают `session.flush()` через репозиторий, если нужен id; `commit` не вызывают. WS — отдельная сессия на сообщение (см. Contracts).
 4. **Рекомендации считаются на лету, `matches` хранит действия.** Строка появляется при первом like/skip. Score сохраняется при создании пары; в записи только с пропусками он равен 0. Обоснование: нет фоновых задач и инвалидации кэша; на сотнях–тысячах пользователей с SQL-префильтром это миллисекунды.
-5. **Скоринг (`services/matching.py`, чистые функции):** `score = jaccard(interests_a, interests_b) + 0.15 * same_office + 0.05 * (same_city and not same_office)`, округление до 3 знаков. `common_interests` и `same_office` возвращаются в ответе — рекомендация объяснима. Коэффициенты — константы модуля, не конфиг.
-6. **Интересы — дерево из двух уровней** (`interests.parent_id`), матчинг по листьям (поднаправлениям). Пользовательские интересы из заявок на группу получают `is_approved = false` до модерации.
+5. **Скоринг в `services/matching.py`.** `score = jaccard(поднаправления) + 0.20 × jaccard(категории) + бонус_локации`, округление до трёх знаков. Бонус равен 0.15 за один офис или 0.05 за один город при разных офисах. Коэффициенты задаются константами модуля.
+6. **Интересы образуют дерево из двух уровней** (`interests.parent_id`). Матчинг учитывает одобренные поднаправления и одобренные категории, явно выбранные в анкете. Пользовательские интересы из заявок на группу получают `is_approved = false` до модерации.
 7. **Вопросы не удаляются.** `questions.is_active`; ответы на неактивные вопросы остаются в БД, но не участвуют в валидации и выдаче.
 8. **Одного like достаточно для пары и будущего личного чата.** Вторая сторона не обязана отвечать. Ответный или повторный like не меняет статусы состоявшейся пары. Chat пока подключён заглушкой.
 9. **Skip — личное скрытие, без срока действия.** Хранится как `declined` своей стороны и не запрещает другой стороне создать пару. Like после skip разрешён; skip созданной пары ничего не меняет. Блокировки и отмена пары — отдельные будущие функции.
@@ -214,7 +217,7 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml
 
 ## Verification boundaries
 
-- **Скоринг** — unit-тесты чистых функций: пустые множества (Jaccard 0, без деления на ноль; бонус локации сохраняется), полное совпадение = 1.0 + бонус, бонус офиса не суммируется с бонусом города, детерминированная сортировка при равном score.
+- **Скоринг.** Unit-тесты проверяют пустые наборы, частичное совпадение категорий, полное совпадение поднаправлений и категорий с баллом 1.20 до бонуса локации, а также бонусы и порядок при равном score.
 - **Сервисы** (фейковые репозитории):
   - survey: каждое правило валидации даёт свой код ошибки; повторный `PUT` полностью заменяет ответы и интересы; `survey_completed` выставляется только при полном наборе обязательных;
   - matching: один like создаёт пару, автоматического accepted у второй стороны нет; оба исчезают из рекомендаций; skip скрывает только у себя; like после skip разрешён; повторы сохраняют score и статусы; chat_id пока null;

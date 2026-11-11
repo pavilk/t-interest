@@ -9,6 +9,7 @@ from app.services.survey import SurveyService
 
 OFFICE_BONUS = 0.15
 CITY_BONUS = 0.05
+CATEGORY_WEIGHT = 0.20
 CANDIDATE_LIMIT = 500
 
 
@@ -21,7 +22,9 @@ def score(a: MatchingProfile, b: MatchingProfile) -> float:
     bonus = (
         OFFICE_BONUS if a.office_id == b.office_id else (CITY_BONUS if a.city == b.city else 0.0)
     )
-    return round(jaccard(a.interest_ids, b.interest_ids) + bonus, 3)
+    interests = jaccard(a.interest_ids, b.interest_ids)
+    categories = jaccard(a.category_ids, b.category_ids)
+    return round(interests + CATEGORY_WEIGHT * categories + bonus, 3)
 
 
 class MatchingService:
@@ -83,13 +86,9 @@ class MatchingService:
         # Capture the fields used in both ranking and the response once. Later
         # profile updates must not mix a score with a different set of interests/office.
         users = await self._identity.get_public_profiles(candidate_ids)
-        interests = await self._survey.get_user_interests(list(users))
+        interests = await self._survey.get_matching_interests(list(users))
         profiles = {
-            candidate_id: MatchingProfile(
-                interest_ids={i.id for i in interests[candidate_id]},
-                office_id=user.office.id,
-                city=user.office.city,
-            )
+            candidate_id: interests[candidate_id].to_profile(user.office.id, user.office.city)
             for candidate_id, user in users.items()
         }
         ranked = sorted(
@@ -105,11 +104,16 @@ class MatchingService:
                     name=users[candidate_id].name,
                     about=users[candidate_id].about,
                     office=users[candidate_id].office,
-                    interests=interests[candidate_id],
+                    interests=interests[candidate_id].interests,
                     free_answers=free_answers[candidate_id],
                 ),
                 score=value,
-                common_interests=[i for i in interests[candidate_id] if i.id in own.interest_ids],
+                common_interests=[
+                    i for i in interests[candidate_id].interests if i.id in own.interest_ids
+                ],
+                common_categories=[
+                    c for c in interests[candidate_id].categories if c.id in own.category_ids
+                ],
                 same_office=profiles[candidate_id].office_id == own.office_id,
             )
             for candidate_id, value in ranked

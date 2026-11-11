@@ -57,6 +57,7 @@ async def test_public_response_and_empty_result(
             "score": 0.15,
             "same_office": True,
             "common_interests": [],
+            "common_categories": [],
         }
     ]
     users.items.pop(2)
@@ -116,6 +117,11 @@ async def test_openapi_matching(client: AsyncClient) -> None:
     response = endpoint["responses"]["200"]["content"]["application/json"]["schema"]
     assert response["type"] == "array"
     assert response["items"]["$ref"].endswith("/PersonRecommendationOut")
+    recommendation = schema["components"]["schemas"]["PersonRecommendationOut"]
+    assert "common_categories" in recommendation["required"]
+    assert recommendation["properties"]["common_categories"]["items"]["$ref"].endswith(
+        "/InterestOut"
+    )
     public = schema["components"]["schemas"]["PublicProfile"]["properties"]
     assert set(public) == {"id", "name", "about", "office", "interests", "free_answers"}
 

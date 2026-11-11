@@ -83,16 +83,42 @@ class FakeSurveyRepository:
         )
 
     async def list_matching_candidate_ids(
-        self, interest_ids: set[int], office_id: int, excluded_user_ids: set[int], limit: int
+        self,
+        interest_ids: set[int],
+        category_ids: set[int],
+        office_id: int,
+        excluded_user_ids: set[int],
+        limit: int,
     ) -> Sequence[int]:
-        user_interests = await self.interests.get_user_interest_ids(list(self.users.items))
-        return sorted(
-            u.id
-            for u in self.users.items.values()
-            if u.survey_completed
-            and u.id not in excluded_user_ids
-            and (u.office_id == office_id or bool(user_interests[u.id] & interest_ids))
-        )[:limit]
+        selected = await self.get_user_matching_interests(list(self.users.items))
+        candidates = []
+        for user in self.users.items.values():
+            if not user.survey_completed or user.id in excluded_user_ids:
+                continue
+            ids = {i.id for i in selected[user.id]}
+            common_interest = bool(ids & interest_ids)
+            if common_interest or ids & category_ids or user.office_id == office_id:
+                candidates.append((not common_interest, user.id))
+        return [user_id for _, user_id in sorted(candidates)[:limit]]
+
+    async def get_user_matching_interests(
+        self, user_ids: Sequence[int]
+    ) -> dict[int, list[Interest]]:
+        selected = await self.interests.get_user_interest_ids(user_ids)
+        active = {q.id for q in self.questions if q.is_active and q.code == "v2_directions"}
+        options = {o.id: o for o in self.options if o.question_id in active}
+        for answer in self.answers:
+            if answer.user_id not in selected or answer.option_id not in options:
+                continue
+            option = options[answer.option_id]
+            if option.question_id != answer.question_id or option.category_interest_id is None:
+                continue
+            category = self.interests.items.get(option.category_interest_id)
+            if category is not None and category.is_approved and category.parent_id is None:
+                selected[answer.user_id].add(category.id)
+        return {
+            user_id: [self.interests.items[i] for i in ids] for user_id, ids in selected.items()
+        }
 
     async def list_active_questions(self) -> Sequence[Question]:
         return sorted((q for q in self.questions if q.is_active), key=lambda q: (q.order, q.id))

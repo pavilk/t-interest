@@ -14,8 +14,10 @@ async def seed(session: AsyncSession) -> None:
     for city, name in OFFICES:
         await repository.ensure_office(city, name)
     interests: dict[tuple[str, str], int] = {}
+    categories: dict[str, int] = {}
     for direction, children in INTERESTS.items():
         root = await repository.ensure_interest(direction, None)
+        categories[direction] = root.id
         for name in children:
             child = await repository.ensure_interest(name, root.id)
             interests[(direction, name)] = child.id
@@ -32,7 +34,11 @@ async def seed(session: AsyncSession) -> None:
         )
         for option_order, (label, interest) in enumerate(options, start=1):
             option = await repository.ensure_option(
-                question.id, label, option_order, interests[interest] if interest else None
+                question.id,
+                label,
+                option_order,
+                interests[interest] if interest else None,
+                category_interest_id=categories.get(label) if code == "v2_directions" else None,
             )
             option_ids[(code, label)] = option.id
 

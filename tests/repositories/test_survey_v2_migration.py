@@ -55,6 +55,53 @@ async def test_fresh_catalogue_and_seed_are_consistent(pg_factory):
         assert len((await session.scalars(select(Interest))).all()) == 20
 
 
+async def test_category_links_upgrade_and_rollback_preserve_existing_answers(pg_factory):
+    async with pg_factory.begin() as session:
+        await migrate(session, "b762e95c1a83", down=True)
+        await session.execute(text("INSERT INTO offices(id,city,name) VALUES(50,'Test','Test')"))
+        await session.execute(
+            text("""
+            INSERT INTO users(id,email,password_hash,name,office_id,survey_completed)
+            VALUES(50,'category@example.com','unused','Category',50,true)
+            """)
+        )
+        answer_id = await session.scalar(
+            text("""
+            INSERT INTO user_answers(user_id,question_id,option_id)
+            SELECT 50,q.id,o.id FROM questions q JOIN answer_options o ON o.question_id=q.id
+            WHERE q.code='v2_directions' AND o.text='Технологии' RETURNING id
+            """)
+        )
+        selected_category = text("""
+            SELECT i.name FROM user_answers a
+            JOIN answer_options o ON o.id=a.option_id
+            JOIN interests i ON i.id=o.category_interest_id
+            WHERE a.id=:answer_id
+        """)
+        for _ in range(2):
+            await migrate(session, "head")
+            assert await session.scalar(selected_category, {"answer_id": answer_id}) == "Технологии"
+            assert (
+                await session.scalar(
+                    text(
+                        "SELECT count(*) FROM answer_options WHERE category_interest_id IS NOT NULL"
+                    )
+                )
+                == 7
+            )
+            await migrate(session, "b762e95c1a83", down=True)
+            assert (
+                await session.scalar(
+                    text("SELECT id FROM user_answers WHERE id=:answer_id"),
+                    {"answer_id": answer_id},
+                )
+                == answer_id
+            )
+            assert (
+                await session.scalar(text("SELECT survey_completed FROM users WHERE id=50")) is True
+            )
+
+
 async def test_upgrade_preserves_legacy_answers_and_completion(pg_factory):
     async with pg_factory.begin() as session:
         await migrate(session, "5f3ad79d9033", down=True)

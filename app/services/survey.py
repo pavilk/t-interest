@@ -9,6 +9,7 @@ from app.schemas.survey import (
     FreeAnswerOut,
     InterestDirectionOut,
     InterestOut,
+    MatchingInterests,
     MatchingProfile,
     QuestionOut,
     SurveyAnswer,
@@ -221,11 +222,9 @@ class SurveyService:
         if not user_ids:
             return {}
         locations = await self._identity.get_locations(user_ids)
-        interests = await self._interests.get_user_interest_ids(list(locations))
+        interests = await self.get_matching_interests(list(locations))
         return {
-            user_id: MatchingProfile(
-                interest_ids=interests.get(user_id, set()), office_id=office_id, city=city
-            )
+            user_id: interests[user_id].to_profile(office_id, city)
             for user_id, (office_id, city) in locations.items()
         }
 
@@ -233,8 +232,22 @@ class SurveyService:
         self, profile: MatchingProfile, excluded_user_ids: set[int], limit: int
     ) -> Sequence[int]:
         return await self._surveys.list_matching_candidate_ids(
-            profile.interest_ids, profile.office_id, excluded_user_ids, limit
+            profile.interest_ids, profile.category_ids, profile.office_id, excluded_user_ids, limit
         )
+
+    async def get_matching_interests(self, user_ids: Sequence[int]) -> dict[int, MatchingInterests]:
+        selected = await self._surveys.get_user_matching_interests(user_ids)
+        result: dict[int, MatchingInterests] = {}
+        for user_id, interests in selected.items():
+            profile = MatchingInterests(interests=[], categories=[])
+            for interest in sorted(interests, key=lambda i: (i.name, i.id)):
+                item = InterestOut.model_validate(interest)
+                if interest.parent_id is None:
+                    profile.categories.append(item)
+                else:
+                    profile.interests.append(item)
+            result[user_id] = profile
+        return result
 
     async def get_user_interests(self, user_ids: Sequence[int]) -> dict[int, list[InterestOut]]:
         if not user_ids:

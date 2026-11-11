@@ -38,8 +38,17 @@ class SurveyRepository(Protocol):
     async def list_active_text_answers(self, user_ids: Sequence[int]) -> Sequence[UserAnswer]: ...
 
     async def list_matching_candidate_ids(
-        self, interest_ids: set[int], office_id: int, excluded_user_ids: set[int], limit: int
+        self,
+        interest_ids: set[int],
+        category_ids: set[int],
+        office_id: int,
+        excluded_user_ids: set[int],
+        limit: int,
     ) -> Sequence[int]: ...
+
+    async def get_user_matching_interests(
+        self, user_ids: Sequence[int]
+    ) -> dict[int, list[Interest]]: ...
 
     async def list_active_questions(self) -> Sequence[Question]: ...
 
