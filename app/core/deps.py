@@ -21,12 +21,24 @@ from app.core.rate_limit import RateLimiter, TokenBucketLimiter
 from app.core.security import decode_token
 from app.models import User
 from app.repositories.chat import SqlChatRepository
-from app.repositories.interfaces import ChatRepository, OfficeRepository, UserRepository
+from app.repositories.interest import SqlInterestRepository
+from app.repositories.interfaces import (
+    ChatRepository,
+    InterestRepository,
+    MatchRepository,
+    OfficeRepository,
+    SurveyRepository,
+    UserRepository,
+)
+from app.repositories.match import SqlMatchRepository
 from app.repositories.office import SqlOfficeRepository
+from app.repositories.survey import SqlSurveyRepository
 from app.repositories.user import SqlUserRepository
 from app.services.chat import ChatService
 from app.services.identity import AuthenticatedUser, IdentityService
+from app.services.matching import MatchingService
 from app.services.notifier import ChatEventSink
+from app.services.survey import SurveyService
 
 # scope="function": commit в get_session выполняется до отправки ответа, а не после
 SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
@@ -91,6 +103,47 @@ def get_chat_service(
 
 IdentityServiceDep = Annotated[IdentityService, Depends(get_identity_service)]
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
+
+
+def get_survey_repository(session: SessionDep) -> SurveyRepository:
+    return SqlSurveyRepository(session)
+
+
+def get_interest_repository(session: SessionDep) -> InterestRepository:
+    return SqlInterestRepository(session)
+
+
+SurveyRepositoryDep = Annotated[SurveyRepository, Depends(get_survey_repository)]
+InterestRepositoryDep = Annotated[InterestRepository, Depends(get_interest_repository)]
+
+
+def get_survey_service(
+    surveys: SurveyRepositoryDep, interests: InterestRepositoryDep, identity: IdentityServiceDep
+) -> SurveyService:
+    return SurveyService(surveys, interests, identity)
+
+
+SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
+
+
+def get_match_repository(session: SessionDep) -> MatchRepository:
+    return SqlMatchRepository(session)
+
+
+MatchRepositoryDep = Annotated[MatchRepository, Depends(get_match_repository)]
+
+
+def get_matching_service(
+    matches: MatchRepositoryDep,
+    survey: SurveyServiceDep,
+    identity: IdentityServiceDep,
+    chat: ChatServiceDep,
+) -> MatchingService:
+    # chat собран на той же SessionDep: пара и личный чат коммитятся вместе
+    return MatchingService(matches, survey, identity, chat)
+
+
+MatchingServiceDep = Annotated[MatchingService, Depends(get_matching_service)]
 
 
 # --- текущий пользователь ---

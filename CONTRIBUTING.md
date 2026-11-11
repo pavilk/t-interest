@@ -10,7 +10,8 @@
 py -3.14 -m venv .venv            # или python3.14 -m venv .venv
 .venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                            # unit-тесты, база не нужна
+pytest                            # unit/API-тесты на фейках, база не нужна
+pytest -m postgres                # интеграционные тесты, нужен TEST_DATABASE_URL
 ruff check . && ruff format .
 mypy
 ```
@@ -37,16 +38,190 @@ mypy
 | `tests/api/test_identity_api.py` | образец тестов ручек (на фейках, без БД) |
 | **chat** — готов | `repositories/chat.py`, `services/chat.py`, `api/chats.py` (REST), `api/ws.py` + `api/connections.py` (WebSocket). Для matching и groups: `ChatService.ensure_direct_chat`, `create_group_chat`, `add_group_member`, `remove_group_member` в той же сессии запроса |
 | `seeds/demo_chat.py`, `tools/chat-demo.html` | ручная проверка чата: демо-пользователи и страница на чистом JS (см. «Как потестить чат») |
-| `tests/repositories/` | тесты на настоящей PostgreSQL, нужен `TEST_DATABASE_URL` (см. CLAUDE.md) |
+| `app/services/survey.py`, `app/services/matching.py` | анкета v2 и рекомендации людей, like/skip; like создаёт личный чат через `ChatService.ensure_direct_chat` |
+| `tests/repositories/`, `tests/api/*_postgres.py` | тесты на настоящей PostgreSQL (`pytest -m postgres`, см. «Проверки на PostgreSQL») |
 
-Миграции — в `alembic/` (команды в CLAUDE.md). Документация ручек: запусти
-`uvicorn app.main:app --reload` и открой http://localhost:8000/docs. Фреймы WebSocket
+
+Миграции Alembic, справочники, survey, matching и chat реализованы. Документация ручек:
+запусти `uvicorn app.main:app --reload` и открой http://localhost:8000/docs. Фреймы WebSocket
 описаны в `/openapi.json` как `ClientFrame` и `ServerFrame`.
+
+## База данных и анкета
+
+Скопируй `.env.example` в `.env`, задай `JWT_SECRET` и согласованные
+`POSTGRES_PASSWORD`/`DATABASE_URL`. Затем:
+
+```bash
+docker compose up -d --wait postgres
+alembic upgrade head
+python -m seeds
+uvicorn app.main:app --reload
+```
+
+Compose пока поднимает PostgreSQL; backend запускается локально. Начальная миграция
+создаёт все уже существовавшие модели проекта. Повторный `python -m seeds` сохраняет
+идентификаторы, ответы и ручную деактивацию вопросов. Миграции устанавливают анкету v2:
+10 вопросов в трёх этапах, семь направлений и 13 поднаправлений для матчинга.
+Сиды дополняют тот же каталог и создают один вымышленный офис, без пользовательских аккаунтов.
+
+Все пути ниже имеют префикс `/api/v1` и требуют access JWT; анкета доступна до завершения
+онбординга:
+
+| Ручка                 | Назначение                                                       |
+| --------------------- | ---------------------------------------------------------------- |
+| `GET /survey`         | Все активные вопросы по `(order, id)`, варианты и условия показа |
+| `GET /survey/answers` | Свои ответы на активные вопросы                                  |
+| `PUT /survey/answers` | Полная замена активных ответов; возвращает `MeOut`               |
+| `GET /interests`      | Одобренное дерево направлений и поднаправлений                   |
+
+Каждый вопрос содержит `code` (стабильный ключ), `stage` (1–3), `is_required` и
+`show_if_option_id`. При `null` вопрос безусловный. Иначе он доступен, только если
+указанный вариант выбран в доступном родительском вопросе. GET возвращает и скрытые
+ветки: фронт рассчитывает видимость по текущему выбору. Зависимости могут быть вложенными.
+
+Пример PUT для одного направления без уточняющих вопросов (условные ID; брать из GET):
+
+```json
+[{ "question_id": 1, "option_ids": [3] }]
+```
+
+Обязательны доступные вопросы с `is_required=true`. Single принимает ровно один вариант,
+multi — минимум один; дубликаты запрещены. Для выбранного «Другое» обязателен отдельный
+текстовый ответ. Ответ про животное необязателен; «Расскажи о себе» тоже необязателен
+и не меняет `users.about`. Если текст передан, после strip он должен быть непустым;
+максимум 300 символов до strip. Для удаления необязательного ответа пропусти вопрос.
+user_id задаётся JWT, лишние поля входа запрещены.
+Текст с символом U+0000 (`\u0000`) отклоняется до записи с 422 `validation_error`:
+PostgreSQL не поддерживает этот символ в текстовых полях.
+
+Ответы отключённых вопросов остаются в БД, но скрыты в текущей выдаче. PUT пересчитывает
+интересы только по активным ответам; выбранные варианты должны ссылаться на одобренные
+поднаправления. Ответы, интересы и `survey_completed` меняются атомарно; два PUT одного
+пользователя сериализуются блокировкой строки users. Неудачный PUT сохраняет прежнее состояние.
+PUT проверяет условия по полному присланному набору, независимо от порядка ответов.
+Ответ на скрытый вопрос запрещён. При снятии направления прежние ответы его ветки и
+соответствующие интересы удаляются. Корневые направления и текст в скоринге не участвуют.
+
+Коды 422: `unknown_question`, `option_not_in_question`, `single_choice_violation`,
+`multi_choice_violation`, `required_question_missing`, `duplicate_question`, `duplicate_option`,
+`invalid_answer_type`, `empty_text`, `text_too_long`, `question_not_applicable`;
+ошибки структуры — `validation_error`. Без активных вопросов с выбором, при цикле,
+отсутствующем/выключенном/текстовом родителе или некорректной выбранной ссылке на интерес —
+409 `survey_not_configured`. GET также проверяет граф условий.
+Формат ошибок общий: `{"error": {"code", "message"}}`.
+
+При изменении текста вопроса, типа или связи варианта с интересом используй явную миграцию.
+Ключи сидов: интерес — имя без учёта регистра/родитель; вопрос — `code`; вариант — вопрос/текст.
+Существующие записи сиды не переименовывают, не перенастраивают и не активируют обратно.
+Редактирование ключей в seeds/data.py добавит новые записи. Изменение активности или
+связей не пересчитывает уже сохранённые user_interests автоматически: такая операция
+должна включать пересчёт по активным ответам. Автоматического сброса survey_completed нет.
+
+### Переход на анкету v2
+
+Ревизии `91d04c247b51` (метаданные условий) и `b762e95c1a83` (данные v2) следуют за
+базовой `5f3ad79d9033`. Старая начальная миграция не меняется. Данные ревизии заморожены
+в её файле и не импортируются из текущего приложения или сидов.
+
+Миграция отключает три старых демонстрационных вопроса, сохраняя их варианты и ответы.
+Совпадающие интересы сохраняют ID; «Искусство» переименовывается в «Культура и искусство».
+Плавание и другие ранее существовавшие интересы не удаляются. Неизвестный активный вопрос,
+дубли старых вопросов, конфликт направлений или неодобренный используемый интерес
+прерывают миграцию транзакционно: сначала требуется явно согласовать конфигурацию.
+
+`user_interests` пересчитываются по активным ответам, `survey_completed` сохраняется.
+У ранее заполнивших только старую анкету интересы опустеют до добровольного заполнения v2;
+обязательного повторного онбординга нет. Уже созданные пары не пересчитываются.
+
+Для выпуска: согласовать поддержку новых полей с фронтом, обновить его типы из OpenAPI,
+остановить запись в анкету, сделать резервную копию БД, выполнить `alembic upgrade head`,
+проверить GET и заполнение анкеты, затем возобновить работу.
+
+Таблица `survey_migration_state` хранит служебный снимок изменённой конфигурации и ID
+созданных строк, без пользовательских ответов. Downgrade восстанавливает прежнюю
+активность, название направления и пересчитывает интересы. Если новая конфигурация
+изменена либо её строки уже используются ответами, группами или другими связями,
+downgrade прекращается до изменения данных с сообщением `restore a backup`.
+В этом случае откатывать выпуск следует восстановлением резервной копии.
+
+## Рекомендации людей
+
+Реализованы рекомендации людей: `GET /api/v1/recommendations/people?limit=20`,
+создание пары: `POST /api/v1/matches/{user_id}/like` и личный пропуск:
+`POST /api/v1/matches/{user_id}/skip`.
+Нужны access JWT и заполненная анкета; иначе `401` или `403 survey_required`.
+Если пользователь исчез после проверки авторизации — `404 user_not_found`.
+`limit` — целое число 1..20, по умолчанию 20; неверное значение — `422 validation_error`.
+Пустая выдача — `200 []`, пагинации offset у этой подборки нет.
+
+Элемент ответа: `{user, score, common_interests, same_office}`. Публичный `user` содержит
+`id`, `name`, `about`, `office`, `interests`, `free_answers`; email и роль не выдаются.
+Свободный ответ — `{question_id, question_text, text_value}` активного text-вопроса.
+Интересы сортируются по `(name, id)`, ответы — по `(question.order, question.id)`.
+
+Скоринг: Jaccard одобренных поднаправлений + 0.15 за один офис либо 0.05 за один город
+при разных офисах, округление до 3 знаков, максимум 1.15. При пустых интересах Jaccard = 0,
+бонус офиса сохраняется. Общий город сам по себе не включает человека в кандидаты.
+SQL отбирает пользователей с заполненной анкетой и общим интересом либо тем же офисом.
+Исключаются сам пользователь, созданные пары (хотя бы один `accepted`) и собственные
+пропуски (`declined`). Чужой пропуск не исключает кандидата и не запрещает создать пару.
+После исключений берутся первые 500 ID, затем top-N по `(-score, user_id)`.
+Это лучшие среди отобранных 500, а не глобальный top-N по всей базе.
+
+Данные загружаются пакетно через сервисы identity/survey; запрос не записывает `matches`.
+Офис и одобренные интересы кандидатов загружаются один раз и используются одновременно
+для ранжирования и объяснения результата. Свободные ответы загружаются только для top-N.
+Изменение анкеты или офиса учитывается при следующем запросе, фонового кэша нет.
+Один `like` сразу создаёт пару: ответ `200 {"matched": true, "chat_id": null}`.
+Второму пользователю автоматический `accepted` не выставляется. Повторы с любой
+стороны возвращают ту же пару и не меняют её статусы или сохранённый score.
+Создать пару можно с любым пользователем с заполненной анкетой, даже вне рекомендаций.
+Ошибки действий: `401` без access-токена, `403 survey_required` без своей анкеты,
+`404 user_not_found` для отсутствующего адресата, `409 target_survey_required` без
+анкеты адресата, `422 cannot_match_self` для себя. ID адресата — целое число
+от 1 до 2147483647 (PostgreSQL INTEGER); вне диапазона — `422 validation_error`.
+
+`skip` возвращает `204` без тела и скрывает человека только в собственной выдаче,
+без срока действия. Он идемпотентен; для созданной пары ничего не меняет.
+`like` после собственного пропуска заменяет свой `declined` на `accepted`.
+Пропуск не является блокировкой. Отмена пары и отдельная блокировка пока не реализованы.
+
+Строка `matches` появляется при первом действии. Репозиторий нормализует ID,
+делает `INSERT ... ON CONFLICT DO NOTHING`, затем `SELECT ... FOR UPDATE`;
+блокировка удерживается до завершения транзакции запроса. Score фиксируется при
+первом создании пары, при пропусках до создания пары равен `0`.
+
+`like` вызывает `ChatService.ensure_direct_chat(a, b)` на той же сессии запроса: пара и
+личный чат коммитятся одной транзакцией, `chat_created` уходит обоим после commit.
+Повторный `like` существующей пары возвращает тот же `chat_id` и создаёт чат, если его
+ещё не было. Отдельного `GET /matches` нет: пары видны через `GET /chats`.
+Рекомендации групп относятся к модулю groups.
+
+## Проверки на PostgreSQL
+
+```bash
+docker compose --profile test up -d --wait postgres-test
+```
+
+Задай `TEST_DATABASE_URL` как переменную окружения (pytest намеренно не берёт её из `.env`):
+
+```powershell
+$env:TEST_DATABASE_URL='postgresql+asyncpg://tinterest_test:tinterest_test@localhost:5433/tinterest_test'
+pytest -m postgres
+```
+
+Linux/macOS: `export TEST_DATABASE_URL=postgresql+asyncpg://tinterest_test:tinterest_test@localhost:5433/tinterest_test`.
+Имя тестовой БД должно содержать `test`; она должна отличаться от рабочей. Каждый тест
+создаёт и удаляет только собственную случайную схему, применяя настоящие миграции.
+Проверяются ограничения PostgreSQL, round-trip миграций, два конкурентных PUT, ошибки
+после записи ответов и при commit, сквозное заполнение анкеты и повтор сидов, гонки
+и outbox чата. Явный запуск
+`pytest -m postgres` без URL завершается ошибкой; пропуск не считается успешной проверкой.
 
 ## Как потестить чат
 
-1. `docker compose up -d postgres`, затем `cp .env.example .env` и поменяй `JWT_SECRET`.
-2. `alembic upgrade head` и `python -m seeds.demo_chat`: появятся Аня, Борис и Вера
+1. Подними базу и примени миграции, как в «База данных и анкета».
+2. `python -m seeds.demo_chat`: появятся Аня, Борис и Вера
    (почты `anya@`, `boris@`, `vera@example.com`, пароль `demo-password-123`),
    их личный чат и групповой «Волейбол».
 3. `uvicorn app.main:app --reload --ws-max-size 16384` в одном терминале,
@@ -54,7 +229,9 @@ mypy
 4. Открой http://localhost:5500/chat-demo.html в двух вкладках, войди разными людьми и пиши.
    Внизу страницы видны все WS-фреймы. REST можно трогать в http://localhost:8000/docs.
 
-Пока нет matching и groups, новые чаты появляются только через сид.
+Новый личный чат появляется после like (`POST /api/v1/matches/{user_id}/like`, оба с анкетой):
+ответ содержит `chat_id`, онлайн-участникам приходит `chat_created`. Групповые чаты
+пока только через сид — до модуля groups.
 
 ## Как добавить модуль: 7 шагов
 
@@ -66,12 +243,15 @@ mypy
 class SurveyRepository(Protocol):
     async def list_active_questions(self) -> Sequence[Question]: ...
     async def list_options(self, question_ids: Sequence[int]) -> Sequence[AnswerOption]: ...
-    async def replace_answers(self, user_id: int, answers: Sequence[UserAnswer]) -> None: ...
+    async def replace_active_answers(
+        self, user_id: int, question_ids: Sequence[int], answers: Sequence[UserAnswer]
+    ) -> None: ...
 ```
 
 Метод называй по смыслу для сервиса, а не по SQL. Возвращай модели или простые значения, не схемы.
 
 **2. Реализация** — `app/repositories/survey.py`, класс `SqlSurveyRepository(session)`:
+
 - все запросы SQLAlchemy только здесь;
 - **никогда не вызывай `commit`**; `flush` — только если после `add` нужен id;
 - `delete` + `add_all` для полной замены ответов — нормально, это всё одна транзакция.
@@ -80,6 +260,7 @@ class SurveyRepository(Protocol):
 их проверял Pydantic, а не сервис.
 
 **4. Сервис** — `app/services/survey.py`, класс `SurveyService`:
+
 - в конструктор приходят **интерфейсы** репозиториев (и `Settings`, если нужен);
 - никаких импортов из `sqlalchemy` — если захотелось, значит запрос должен уехать в репозиторий;
 - бизнес-ошибки — только через `app/core/errors.py`, с `code` из контрактов ARCHITECTURE.md
@@ -89,6 +270,7 @@ class SurveyRepository(Protocol):
   но не чужой репозиторий.
 
 **5. Тесты** — `tests/unit/test_survey_service.py`:
+
 - добавь фейк в `tests/fakes/repositories.py` с теми же методами, что в Protocol;
 - один тест на каждое правило и каждый код ошибки; ошибки проверяй по `exc.value.code`;
 - тесты должны проходить без базы.
@@ -108,6 +290,7 @@ SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 Сессию бери только через `SessionDep`: там `scope="function"`, иначе commit случится после ответа.
 
 **7. Ручки** — `app/api/survey.py` по образцу `app/api/me.py`, подключить в `app/main.py`:
+
 - роутер только принимает схему, зовёт **один** метод сервиса и возвращает результат;
 - пользователь — через `CurrentUser`, а для ручек после анкеты — `SurveyCompletedUser`;
 - коды ошибок перечисли в `responses=error_responses(...)`, чтобы они попали в OpenAPI;
@@ -132,9 +315,10 @@ SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 
 Порядок — по приоритетам команды. Методы ниже — подсказка, итоговый набор выводи из контрактов.
 
-| Модуль | Репозиторий | Сервис и главные правила | Раздел ARCHITECTURE.md |
-|---|---|---|---|
-| **survey** | `SurveyRepository`: активные вопросы, варианты, замена ответов. `InterestRepository`: дерево интересов, замена интересов пользователя | `SurveyService`: `get_survey`, `get_answers`, `submit_answers` (валидация single/multi/text, обязательные вопросы, пересчёт `user_interests` из `answer_options.interest_id`, `survey_completed = True`), `get_matching_profile(user_ids)` | Contracts → survey |
-| **matching** | `MatchRepository`: `get_pair(a, b)`, `add`, `excluded_user_ids(user_id)` | `services/matching.py`: **чистые функции** `jaccard`, `score` + `MatchingService`: `recommend_people`, `like`, `decline`. Пара всегда `user_a_id < user_b_id` | Contracts → matching, Decisions 4–5 |
-| **groups** | `GroupRepository`: `get`, `get_active_by_interest`, `add`, `list_pending`, `add_member`, `is_member`, `recommend_for_interests` | `GroupService`: `create_request`, `approve`/`reject` (только moderator/admin), `join`, `leave` | Contracts → groups |
-| **search** | `SearchRepository`: `ILIKE` по людям и одобренным группам | `SearchService`: строка ≥ 2 символов, limit 20 | Data flow → 6 |
+| Модуль                                | Репозиторий                                                                                                                                                          | Сервис и главные правила                                                                                                                                                      | Раздел ARCHITECTURE.md              |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **survey — готов**                    | `SurveyRepository`: активные вопросы, варианты, замена активных ответов с сохранением истории. `InterestRepository`: дерево интересов, замена интересов пользователя | `SurveyService`: `get_survey`, `get_answers`, `submit_answers`, `list_interests`, `get_matching_profile(user_ids)`; модели и Protocol — образец для следующих модулей         | Contracts → survey                  |
+| **chat — готов**                      | `ChatRepository`                                                                                                                                                     | `ChatService`; для groups: `create_group_chat`, `add_group_member`, `remove_group_member` в той же сессии запроса                                                             | `.claude/plans/chat-realtime/`      |
+| **matching — люди и действия готовы** | `excluded_user_ids(user_id)`, `get_or_create_for_update(a, b)`; каноническая пара и блокировка строки                                                                | `recommend_people`, `like`, `skip`, чистые `jaccard`/`score`. Одного like достаточно; skip личный. Like создаёт личный чат                                                      | Contracts → matching, Decisions 4–5 |
+| **groups**                            | `GroupRepository`: `get`, `get_active_by_interest`, `add`, `list_pending`, `add_member`, `is_member`, `recommend_for_interests`                                      | `GroupService`: `create_request`, `approve`/`reject` (только moderator/admin), `join`, `leave`                                                                                | Contracts → groups                  |
+| **search**                            | `SearchRepository`: `ILIKE` по людям и одобренным группам                                                                                                            | `SearchService`: строка ≥ 2 символов, limit 20                                                                                                                                | Data flow → 6                       |

@@ -1,7 +1,7 @@
 """Схема чата для реалтайма: client_msg_id, bigint id сообщений, CHECK и индекс
 
 Revision ID: 6de4de37e1ad
-Revises: 5f3ad79d9033
+Revises: b762e95c1a83
 Create Date: 2026-10-18 07:18:38.623741
 
 """
@@ -14,7 +14,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "6de4de37e1ad"
-down_revision: str | Sequence[str] | None = "5f3ad79d9033"
+down_revision: str | Sequence[str] | None = "b762e95c1a83"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

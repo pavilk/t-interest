@@ -8,13 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Chat, ChatType, Message
 from app.repositories.chat import SqlChatRepository
 from tests.repositories.conftest import (
-    TEST_DATABASE_URL,
     MakeUser,
     SessionFactory,
     make_group,
 )
 
-pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL не задан")
+pytestmark = pytest.mark.postgres
 
 
 @pytest.fixture

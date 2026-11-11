@@ -41,7 +41,7 @@ class Outbox:
 @lru_cache
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
     # движок создаётся при первом запросе, а не при импорте: тестам без БД он не нужен
-    engine = create_async_engine(get_settings().database_url)
+    engine = create_async_engine(get_settings().database_url, hide_parameters=True)
     return async_sessionmaker(engine, expire_on_commit=False)
 
 

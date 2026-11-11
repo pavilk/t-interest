@@ -9,6 +9,7 @@ from app.models.survey import (
     Interest,
     Question,
     QuestionType,
+    SurveyMigrationState,
     UserAnswer,
     UserInterest,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "Office",
     "Question",
     "QuestionType",
+    "SurveyMigrationState",
     "User",
     "UserAnswer",
     "UserInterest",

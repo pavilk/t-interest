@@ -8,3 +8,6 @@ __pycache__/
 .idea/
 .vscode/
 *.egg-info/
+.codex
+AGENTS.md
+docs/

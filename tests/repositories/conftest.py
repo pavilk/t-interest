@@ -1,53 +1,24 @@
-"""Тесты репозиториев на настоящей PostgreSQL.
+"""Тесты chat на настоящей PostgreSQL.
 
-Нужна переменная TEST_DATABASE_URL с отдельной базой: схема в ней пересоздаётся
-через Base.metadata.create_all, данные очищаются перед каждым тестом.
-Без переменной тесты пропускаются (skipped), а не падают.
-
+Схема — из `pg_factory` (tests/conftest.py): отдельная схема на тест, настоящие миграции.
 Транзакция на тест с откатом здесь не подходит: тесты гонок и outbox
-коммитят в нескольких сессиях. Поэтому перед каждым тестом — TRUNCATE.
+коммитят в нескольких сессиях, поэтому каждому тесту — своя чистая схема.
 """
 
-import asyncio
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import Base, Group, GroupStatus, Interest, Office, User, UserRole
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
+from app.models import Group, GroupStatus, Interest, Office, User, UserRole
 
 SessionFactory = async_sessionmaker[AsyncSession]
 MakeUser = Callable[[str], Awaitable[int]]
 
 
-@pytest.fixture(scope="session")
-def _schema() -> None:
-    assert TEST_DATABASE_URL is not None
-
-    async def recreate() -> None:
-        engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
-            await conn.run_sync(Base.metadata.create_all)
-        await engine.dispose()
-
-    asyncio.run(recreate())
-
-
 @pytest.fixture
-async def session_factory(_schema: None) -> AsyncIterator[SessionFactory]:
-    assert TEST_DATABASE_URL is not None
-    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
-    tables = ", ".join(t.name for t in Base.metadata.sorted_tables)
-    async with engine.begin() as conn:
-        await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
+def session_factory(pg_factory: SessionFactory) -> SessionFactory:
+    return pg_factory
 
 
 @pytest.fixture
@@ -82,7 +53,8 @@ def make_user(session: AsyncSession) -> Callable[[str], Awaitable[int]]:
 
 
 async def make_group(session: AsyncSession, name: str, created_by: int) -> int:
-    interest = Interest(name=name)
+    # префикс: сиды анкеты v2 уже создают интересы с обычными названиями
+    interest = Interest(name=f"Тест: {name}")
     session.add(interest)
     await session.flush()
     group = Group(

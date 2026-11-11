@@ -7,9 +7,9 @@ from sqlalchemy import text
 
 import app.core.db as db
 from app.core.db import get_outbox, session_scope
-from tests.repositories.conftest import TEST_DATABASE_URL, SessionFactory
+from tests.repositories.conftest import SessionFactory
 
-pytestmark = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL не задан")
+pytestmark = pytest.mark.postgres
 
 
 class Recorder:

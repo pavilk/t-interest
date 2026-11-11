@@ -5,8 +5,9 @@
 
     python -m seeds.demo_chat
 
-Пока нет matching и groups, это единственный способ получить чаты: сид вызывает
-те же методы ChatService, что потом будут вызывать эти модули.
+Личный чат можно получить и без сида: like через `POST /matches/{user_id}/like`.
+Групповой — только сидом, пока нет модуля groups; сид вызывает те же методы
+ChatService, что потом будет вызывать groups.
 """
 
 import asyncio
@@ -55,12 +56,17 @@ async def main() -> None:
 
         group = await session.scalar(select(Group).where(Group.name == "Волейбол"))
         if group is None:
-            sport = Interest(name="Спорт")
-            session.add(sport)
-            await session.flush()
-            volleyball = Interest(name="Волейбол", parent_id=sport.id)
-            session.add(volleyball)
-            await session.flush()
+            # «Спорт → Волейбол» уже есть после миграции анкеты v2; создаём, только если нет
+            volleyball = await session.scalar(
+                select(Interest).where(Interest.name == "Волейбол", Interest.parent_id.is_not(None))
+            )
+            if volleyball is None:
+                sport = Interest(name="Спорт")
+                session.add(sport)
+                await session.flush()
+                volleyball = Interest(name="Волейбол", parent_id=sport.id)
+                session.add(volleyball)
+                await session.flush()
             group = Group(
                 name="Волейбол",
                 description="Играем по средам после работы",

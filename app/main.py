@@ -1,7 +1,7 @@
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, chats, me, ws
+from app.api import auth, chats, matching, me, survey, ws
 from app.api.connections import ConnectionManager
 from app.api.errors import register_error_handlers
 from app.core.config import CorsSettings
@@ -24,9 +24,11 @@ def create_app() -> FastAPI:
     api = APIRouter(prefix="/api/v1")
     api.include_router(auth.router)
     api.include_router(me.router)
+    api.include_router(survey.router)
+    api.include_router(matching.router)
     api.include_router(chats.router)
     api.include_router(ws.router)
-    # TODO: survey, matching, groups, search — подключать сюда же
+    # TODO: groups, search — подключать сюда же
     app.include_router(api)
 
     @app.get("/health", tags=["health"])

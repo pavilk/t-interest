@@ -39,14 +39,16 @@
 > Обнови этот раздел, когда команды изменятся.
 
 ```bash
-docker compose up -d postgres        # поднять БД
+docker compose up -d --wait postgres # поднять БД (нужен POSTGRES_PASSWORD в .env)
 alembic upgrade head                 # применить миграции
 alembic revision --autogenerate -m "..."  # новая миграция (проверь сгенерированный файл руками)
 alembic downgrade -1                 # откатить последнюю миграцию
 alembic check                        # модели и миграции совпадают (перед PR)
 uvicorn app.main:app --reload --ws-max-size 16384  # запустить API локально (лимит WS-фрейма 16 KB)
-pytest                               # все тесты (тесты на БД пропускаются без TEST_DATABASE_URL)
-TEST_DATABASE_URL=postgresql+asyncpg://tinterest:tinterest@localhost:5432/tinterest_test pytest tests/repositories  # тесты репозиториев на отдельной БД: схема пересоздаётся
+pytest                               # unit- и API-тесты на фейках (маркер postgres исключён)
+docker compose --profile test up -d --wait postgres-test  # временная тестовая БД (порт TEST_POSTGRES_PORT, 5433)
+TEST_DATABASE_URL=postgresql+asyncpg://tinterest_test:tinterest_test@localhost:5433/tinterest_test pytest -m postgres  # тесты на PostgreSQL: схема на тест из миграций
+python -m seeds                      # справочники и анкета v2 (без пользователей)
 ruff check . && ruff format .        # линт и формат
 mypy                                 # проверка типов
 python -m seeds.demo_chat            # демо: 3 вымышленных пользователя, личный и групповой чат
@@ -84,6 +86,26 @@ docker-compose.yml
 - **WebSocket**: соединение живёт долго, поэтому сессия создаётся **на каждое входящее сообщение**, а не на соединение.
 - **Тесты**: сервисы — с фейковыми репозиториями; репозитории — на тестовой PostgreSQL.
 
+## Анкета v2
+
+- 10 вопросов в трёх этапах; условия показа хранятся в `questions.show_if_option_id`.
+- GET `/api/v1/survey` отдаёт все активные вопросы с `code`, `stage`, `is_required`
+  и `show_if_option_id`. Фронт вычисляет видимость, сервер проверяет её независимо.
+- Обязательны только доступные `is_required` вопросы. Каждое выбранное «Другое»
+  требует отдельного текста. Вопрос про животное и «Расскажи о себе» необязательны;
+  последний не меняет `users.about`. Лимит текста — 300 символов, U+0000 запрещён.
+- PUT полностью заменяет активные ответы; скрытые ответы дают 422 `question_not_applicable`.
+  Снятие ветки удаляет прежние активные ответы этой ветки и пересчитывает интересы.
+- В скоринг входят только 13 готовых поднаправлений спорта, культуры и отдыха.
+  Направления и текстовые уточнения в скоринге не участвуют.
+- Миграции `91d04c247b51` → `b762e95c1a83` идут поверх `5f3ad79d9033`.
+  Старые вопросы выключаются, ответы и `survey_completed` сохраняются. Интересы
+  пересчитываются по активным ответам; повторное заполнение добровольное.
+- Сиды находят вопросы по стабильному `code`, сохраняют ID и ручную деактивацию.
+- Служебная **SurveyMigrationState**: revision (PK), snapshot (JSONB). Хранит только
+  конфигурацию для отката. Downgrade отказывается удалять используемые или изменённые
+  данные v2; для такого выпуска требуется восстановление резервной копии.
+
 ## Основные сущности
 
 Все `created_at` — `timestamptz` в UTC.
@@ -92,10 +114,10 @@ docker-compose.yml
 - **Office**: id, city, name. Справочник, чтобы локация сравнивалась без опечаток.
 - **Interest**: id, name, parent_id? Дерево из двух уровней: направление (спорт, искусство, отдых…) → поднаправление (волейбол, театр, бар…). Для матчинга используются поднаправления.
 - **UserInterest**: user_id, interest_id. PK (user_id, interest_id).
-- **Question**: id, text, type (single / multi / text), order, is_active. Вопросы не удаляются, только деактивируются.
+- **Question**: id, code (unique), text, type (single / multi / text), order, is_active, stage (1..3), is_required, show_if_option_id? (FK answer_options). Вопросы не удаляются, только деактивируются.
 - **AnswerOption**: id, question_id, text, interest_id? Выбор варианта со ссылкой на интерес даёт пользователю этот интерес.
 - **UserAnswer**: id, user_id, question_id, option_id?, text_value?. Ровно одно из двух заполнено (CHECK). UNIQUE (user_id, question_id, option_id). Свободный ответ («Другое») показывается в профиле, в скоринге не участвует.
-- **Match**: id, user_a_id, user_b_id, score, a_status, b_status (pending / accepted / declined), created_at. Всегда `user_a_id < user_b_id`, UNIQUE (user_a_id, user_b_id). Пара взаимная, когда оба статуса `accepted`.
+- **Match**: id, user_a_id, user_b_id, score, a_status, b_status (pending / accepted / declined), created_at, updated_at. Всегда `user_a_id < user_b_id`, UNIQUE (user_a_id, user_b_id). Одного `accepted` достаточно для пары; `declined` — личный пропуск.
 - **Group**: id, name, description, interest_id, created_by, status (pending / approved / rejected), created_at. Пользователям видны только `approved`.
 - **GroupMember**: group_id, user_id, role (owner / member). PK (group_id, user_id).
 - **Chat**: id, type (direct / group), group_id?, direct_key?. Личный чат между двумя людьми только один: `direct_key = "<min_id>:<max_id>"` (UNIQUE), у group он пустой (CHECK).
@@ -106,9 +128,14 @@ docker-compose.yml
 
 ## Матчинг (первая версия)
 
+- Реализованы рекомендации людей: `GET /api/v1/recommendations/people`, `limit` 1..20 (default 20), только после анкеты.
+- Отбор: первые 500 ID после исключений, с общим одобренным поднаправлением или тем же офисом; затем top-N по `(-score, user_id)`. Исключаются созданные пары (любой `accepted`) и собственные пропуски (`declined`); чужой пропуск не мешает.
+- `POST /matches/{user_id}/like` сразу создаёт пару и личный чат (`ChatService.ensure_direct_chat` в той же транзакции) и возвращает `{matched: true, chat_id}`; `chat_created` уходит обоим после commit. Повторы не меняют статусы и score пары, возвращают тот же `chat_id` и создают чат, если его не было.
+- `POST /matches/{user_id}/skip` → `204`: личный пропуск, для созданной пары ничего не меняет. Like после пропуска разрешён. Оба пользователя должны заполнить анкету; общие интересы/офис для действия не обязательны.
+- Формула: Jaccard + 0.15 за офис либо 0.05 за город при разных офисах, округление до 3 знаков. Пустые интересы дают Jaccard 0, но бонус офиса сохраняется. Совпадение только города не включает кандидата в выдачу.
 - Простой и объяснимый скоринг: Jaccard по интересам пользователя (поднаправления) плюс бонус за совпадение офиса/города.
 - Скоринг лежит в `services/matching.py` как чистые функции без БД и покрыт unit-тестами. Данные для него загружаются через репозитории.
-- Не показывать пользователю его самого, уже отклонённые пары и заблокированных.
+- Не показывать пользователю его самого, созданные пары и собственные пропуски. Блокировки отдельной функцией пока нет.
 - Рекомендации групп: одобренные группы по интересам пользователя, в которых он ещё не состоит.
 
 ## Группы и модерация
@@ -137,7 +164,6 @@ docker-compose.yml
 
 Пока не решено. Не реализовывать «окончательно», не спросив команду.
 
-- Можно ли писать человеку сразу или только после взаимного лайка. Сейчас заложено «после взаимного» через `Match.a_status / b_status`.
 - Подборка людей: карточки (свайп) или список.
 - Поиск: по чему именно ищем (люди по имени? группы по названию/интересу?).
 - Какие ещё вопросы в анкете, кроме интересов, и кто составляет список интересов.
