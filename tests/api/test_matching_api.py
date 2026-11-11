@@ -6,7 +6,7 @@ from httpx import AsyncClient
 from app.core.config import Settings
 from app.core.security import create_token
 from app.models import User
-from tests.fakes.repositories import FakeMatchRepository, FakeUserRepository
+from tests.fakes.repositories import FakeChatRepository, FakeMatchRepository, FakeUserRepository
 
 PATH = "/api/v1/recommendations/people"
 
@@ -120,8 +120,12 @@ async def test_openapi_matching(client: AsyncClient) -> None:
     assert set(public) == {"id", "name", "about", "office", "interests", "free_answers"}
 
 
-async def test_like_and_skip_flow_without_chat(
-    client: AsyncClient, auth: dict[str, str], settings: Settings, matches: FakeMatchRepository
+async def test_like_and_skip_flow_creates_one_chat(
+    client: AsyncClient,
+    auth: dict[str, str],
+    settings: Settings,
+    matches: FakeMatchRepository,
+    chats: FakeChatRepository,
 ) -> None:
     peer_auth = {"Authorization": f"Bearer {create_token(2, 'access', settings)}"}
     skipped = await client.post("/api/v1/matches/2/skip", headers=auth)
@@ -131,11 +135,12 @@ async def test_like_and_skip_flow_without_chat(
     for headers, target in [(peer_auth, 1), (auth, 2), (peer_auth, 1)]:
         liked = await client.post(f"/api/v1/matches/{target}/like", headers=headers)
         assert liked.status_code == 200
-        assert liked.json() == {"matched": True, "chat_id": None}
+        assert liked.json() == {"matched": True, "chat_id": 1}
         skipped = await client.post(f"/api/v1/matches/{target}/skip", headers=headers)
         assert skipped.status_code == 204
         assert (await client.get(PATH, headers=headers)).json() == []
     assert len(matches.items) == 1
+    assert len(chats.chats) == 1 and await chats.list_member_ids(1) == [1, 2]
 
 
 @pytest.mark.parametrize("action", ["like", "skip"])
@@ -207,4 +212,5 @@ async def test_openapi_actions(client: AsyncClient) -> None:
             assert "content" not in endpoint["responses"][success]
     result = schema["components"]["schemas"]["LikeOut"]
     assert set(result["properties"]) == {"matched", "chat_id"}
-    assert {t.get("type") for t in result["properties"]["chat_id"]["anyOf"]} == {"integer", "null"}
+    assert result["properties"]["chat_id"]["type"] == "integer"
+    assert set(result["required"]) == {"chat_id"}

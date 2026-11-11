@@ -10,6 +10,7 @@ from app.core.errors import (
     DomainValidationError,
     ForbiddenError,
     NotFoundError,
+    RateLimitedError,
     UnauthorizedError,
 )
 
@@ -19,6 +20,7 @@ _STATUS_BY_ERROR: dict[type[DomainError], int] = {
     ConflictError: 409,
     DomainValidationError: 422,
     UnauthorizedError: 401,
+    RateLimitedError: 429,
 }
 
 

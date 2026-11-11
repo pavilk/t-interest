@@ -5,19 +5,25 @@
 тогда база не нужна. Новый модуль добавляет сюда свои `get_*_repository` и `get_*_service`.
 """
 
-from typing import Annotated
+from collections.abc import AsyncIterator
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Annotated, Protocol
 
 from fastapi import Depends
+from fastapi.requests import HTTPConnection
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
-from app.core.db import get_session
+from app.core.db import EventPublisher, get_event_publisher, get_outbox, get_session, session_scope
 from app.core.errors import ForbiddenError, UnauthorizedError
+from app.core.rate_limit import RateLimiter, TokenBucketLimiter
 from app.core.security import decode_token
 from app.models import User
+from app.repositories.chat import SqlChatRepository
 from app.repositories.interest import SqlInterestRepository
 from app.repositories.interfaces import (
+    ChatRepository,
     InterestRepository,
     MatchRepository,
     OfficeRepository,
@@ -28,8 +34,10 @@ from app.repositories.match import SqlMatchRepository
 from app.repositories.office import SqlOfficeRepository
 from app.repositories.survey import SqlSurveyRepository
 from app.repositories.user import SqlUserRepository
-from app.services.identity import IdentityService
+from app.services.chat import ChatService
+from app.services.identity import AuthenticatedUser, IdentityService
 from app.services.matching import MatchingService
+from app.services.notifier import ChatEventSink
 from app.services.survey import SurveyService
 
 # scope="function": commit в get_session выполняется до отправки ответа, а не после
@@ -48,8 +56,34 @@ def get_office_repository(session: SessionDep) -> OfficeRepository:
     return SqlOfficeRepository(session)
 
 
+def get_chat_repository(session: SessionDep) -> ChatRepository:
+    return SqlChatRepository(session)
+
+
 UserRepositoryDep = Annotated[UserRepository, Depends(get_user_repository)]
 OfficeRepositoryDep = Annotated[OfficeRepository, Depends(get_office_repository)]
+ChatRepositoryDep = Annotated[ChatRepository, Depends(get_chat_repository)]
+
+
+# --- события и лимиты ---
+
+
+def get_chat_events(session: SessionDep) -> ChatEventSink:
+    """Outbox сессии запроса: события уйдут в WS только после commit в get_session."""
+    return get_outbox(session)
+
+
+def get_rate_limiter(conn: HTTPConnection, settings: SettingsDep) -> RateLimiter:
+    """Один лимитер на приложение: общий для REST и WS."""
+    limiter: RateLimiter | None = getattr(conn.app.state, "rate_limiter", None)
+    if limiter is None:
+        limiter = TokenBucketLimiter(settings.chat_rate_per_second, settings.chat_rate_burst)
+        conn.app.state.rate_limiter = limiter
+    return limiter
+
+
+ChatEventsDep = Annotated[ChatEventSink, Depends(get_chat_events)]
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
 
 
 # --- сервисы ---
@@ -61,7 +95,14 @@ def get_identity_service(
     return IdentityService(users, offices, settings)
 
 
+def get_chat_service(
+    chats: ChatRepositoryDep, events: ChatEventsDep, limiter: RateLimiterDep
+) -> ChatService:
+    return ChatService(chats, events, limiter)
+
+
 IdentityServiceDep = Annotated[IdentityService, Depends(get_identity_service)]
+ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
 
 
 def get_survey_repository(session: SessionDep) -> SurveyRepository:
@@ -93,9 +134,13 @@ MatchRepositoryDep = Annotated[MatchRepository, Depends(get_match_repository)]
 
 
 def get_matching_service(
-    matches: MatchRepositoryDep, survey: SurveyServiceDep, identity: IdentityServiceDep
+    matches: MatchRepositoryDep,
+    survey: SurveyServiceDep,
+    identity: IdentityServiceDep,
+    chat: ChatServiceDep,
 ) -> MatchingService:
-    return MatchingService(matches, survey, identity)
+    # chat собран на той же SessionDep: пара и личный чат коммитятся вместе
+    return MatchingService(matches, survey, identity, chat)
 
 
 MatchingServiceDep = Annotated[MatchingService, Depends(get_matching_service)]
@@ -130,3 +175,47 @@ async def require_survey_completed(user: CurrentUser) -> User:
 
 
 SurveyCompletedUser = Annotated[User, Depends(require_survey_completed)]
+
+
+# --- WebSocket: сессия на каждый фрейм, а не на соединение ---
+
+
+class ChatUnits(Protocol):
+    """То, что нужно WS-эндпоинту. В API-тестах подменяется версией на фейках."""
+
+    async def authenticate(self, access_token: str) -> AuthenticatedUser: ...
+
+    def chat_service(self) -> AbstractAsyncContextManager[ChatService]: ...
+
+
+class ChatUnitFactory:
+    """Собирает сервисы на короткую сессию. Не зависит от SessionDep: соединение живёт долго."""
+
+    def __init__(
+        self, settings: Settings, publisher: EventPublisher | None, limiter: RateLimiter
+    ) -> None:
+        self._settings = settings
+        self._publisher = publisher
+        self._limiter = limiter
+
+    async def authenticate(self, access_token: str) -> AuthenticatedUser:
+        async with session_scope() as session:
+            service = IdentityService(
+                SqlUserRepository(session), SqlOfficeRepository(session), self._settings
+            )
+            return await service.authenticate_for_chat(access_token)
+
+    @asynccontextmanager
+    async def chat_service(self) -> AsyncIterator[ChatService]:
+        """На выходе — commit, затем события уходят в WS-соединения."""
+        async with session_scope(self._publisher) as session:
+            yield ChatService(SqlChatRepository(session), get_outbox(session), self._limiter)
+
+
+def get_chat_units(
+    conn: HTTPConnection, settings: SettingsDep, limiter: RateLimiterDep
+) -> ChatUnits:
+    return ChatUnitFactory(settings, get_event_publisher(conn), limiter)
+
+
+ChatUnitsDep = Annotated[ChatUnits, Depends(get_chat_units)]

@@ -12,7 +12,7 @@ from app.core.security import create_token
 from app.main import create_app
 from app.models import Chat, Match, MatchStatus, User
 from app.repositories.match import SqlMatchRepository
-from app.services.matching import MatchingService
+from app.services.chat import ChatService
 
 pytestmark = pytest.mark.postgres
 RECOMMENDATIONS = "/api/v1/recommendations/people"
@@ -85,7 +85,8 @@ async def test_skip_then_like_persists_pair_and_excludes_both_users(
         )
     response = await action_client.post("/api/v1/matches/1/like", headers=second)
     assert response.status_code == 200
-    assert response.json() == {"matched": True, "chat_id": None}
+    chat_id = response.json()["chat_id"]
+    assert response.json() == {"matched": True, "chat_id": chat_id}
     for auth, target in [(first, 2), (second, 1)]:
         response = await action_client.post(f"/api/v1/matches/{target}/like", headers=auth)
         assert response.status_code == 200
@@ -100,7 +101,8 @@ async def test_skip_then_like_persists_pair_and_excludes_both_users(
             MatchStatus.ACCEPTED,
             0.15,
         )
-        assert await session.scalar(select(func.count()).select_from(Chat)) == 0
+        (chat,) = await session.scalars(select(Chat))
+        assert (chat.id, chat.direct_key) == (chat_id, "1:2")
 
 
 @pytest.mark.parametrize(
@@ -150,7 +152,8 @@ async def test_concurrent_actions_serialize_one_pair(
     for response, action in zip(results, [first_action, second_action], strict=True):
         assert response.status_code == (200 if action == "like" else 204), response.text
         if action == "like":
-            assert response.json() == {"matched": True, "chat_id": None}
+            assert response.json()["matched"] is True
+            assert isinstance(response.json()["chat_id"], int)
     async with pg_data() as session:
         pair = (await session.scalars(select(Match))).one()
         assert (pair.user_a_id, pair.user_b_id) == (1, 2)
@@ -165,7 +168,9 @@ async def test_concurrent_actions_serialize_one_pair(
             assert pair.score == 0.15
             if second_action == "like":
                 assert (pair.a_status, pair.b_status).count(MatchStatus.ACCEPTED) == 1
-        assert await session.scalar(select(func.count()).select_from(Chat)) == 0
+        liked = "like" in (first_action, second_action)
+        # гонка двух like не создаёт второй личный чат
+        assert await session.scalar(select(func.count()).select_from(Chat)) == int(liked)
 
 
 @pytest.mark.parametrize("failure", ["integration", "commit"])
@@ -182,7 +187,7 @@ async def test_failed_like_rolls_back_pair_changes(
         response = await action_client.post("/api/v1/matches/2/skip", headers=headers(settings, 1))
         assert response.status_code == 204
 
-    async def fail_integration(self: MatchingService, user_a: int, user_b: int) -> int | None:
+    async def fail_integration(self: ChatService, user_a: int, user_b: int) -> int:
         raise RuntimeError("integration failure")
 
     async def fail_commit(self: AsyncSession) -> None:
@@ -190,7 +195,7 @@ async def test_failed_like_rolls_back_pair_changes(
         raise RuntimeError("commit failure")
 
     if failure == "integration":
-        monkeypatch.setattr(MatchingService, "_ensure_direct_chat", fail_integration)
+        monkeypatch.setattr(ChatService, "ensure_direct_chat", fail_integration)
     else:
         monkeypatch.setattr(AsyncSession, "commit", fail_commit)
     response = await action_client.post("/api/v1/matches/2/like", headers=headers(settings, 1))
@@ -206,3 +211,5 @@ async def test_failed_like_rolls_back_pair_changes(
             )
         else:
             assert pairs == []
+        # чат откатывается вместе с парой: одна транзакция
+        assert await session.scalar(select(func.count()).select_from(Chat)) == 0

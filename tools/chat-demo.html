@@ -1,0 +1,174 @@
+<!doctype html>
+<!--
+  Тестовая страница чата для бэкенда: не продукт, а способ руками проверить REST и WebSocket.
+  Запуск: python -m http.server 5500 -d tools  →  http://localhost:5500/chat-demo.html
+  Открой две вкладки и войди разными пользователями из seeds/demo_chat.py.
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tinterest — проверка чата</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0; display: flex; height: 100vh; color: #222; }
+  aside { width: 280px; border-right: 1px solid #ddd; padding: 12px; overflow: auto; }
+  main { flex: 1; display: flex; flex-direction: column; }
+  input, button { font: inherit; padding: 6px 8px; }
+  input { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+  .chat { padding: 8px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; }
+  .chat:hover, .chat.active { background: #eef3ff; }
+  .badge { background: #ffdd2d; border-radius: 10px; padding: 0 7px; font-size: 13px; }
+  #messages { flex: 1; overflow: auto; padding: 12px; }
+  .msg { margin: 6px 0; max-width: 70%; padding: 6px 10px; border-radius: 8px; background: #f2f2f2; }
+  .msg.mine { margin-left: auto; background: #dcecff; }
+  .msg small { color: #777; display: block; }
+  .msg.pending { opacity: .5; }
+  form#send { display: flex; gap: 6px; padding: 12px; border-top: 1px solid #ddd; }
+  #status { font-size: 13px; color: #777; margin: 8px 0; }
+  #log { font: 12px monospace; color: #555; white-space: pre-wrap; max-height: 160px; overflow: auto; border-top: 1px solid #ddd; padding: 6px 12px; }
+</style>
+</head>
+<body>
+<aside>
+  <form id="login">
+    <input id="api" value="http://localhost:8000" title="Адрес бэкенда">
+    <input id="email" value="anya@example.com">
+    <input id="password" type="password" value="demo-password-123">
+    <button>Войти</button>
+  </form>
+  <div id="status">не подключено</div>
+  <div id="chats"></div>
+</aside>
+<main>
+  <div id="messages"></div>
+  <form id="send"><input id="text" placeholder="Сообщение" autocomplete="off"><button>Отправить</button></form>
+  <div id="log"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let api, token, me, ws, current = null;
+const pending = new Map(); // client_msg_id → элемент оптимистичного сообщения
+
+function log(direction, data) {
+  $("log").textContent = `${direction} ${JSON.stringify(data)}\n` + $("log").textContent;
+}
+
+async function http(method, path, body) {
+  const response = await fetch(api + "/api/v1" + path, {
+    method,
+    headers: { "Content-Type": "application/json", ...(token && { Authorization: "Bearer " + token }) },
+    body: body && JSON.stringify(body),
+  });
+  if (response.status === 204) return null;
+  const data = await response.json();
+  if (!response.ok) throw new Error(`${response.status} ${data.error?.code}`);
+  return data;
+}
+
+async function loadChats() {
+  const chats = await http("GET", "/chats");
+  $("chats").replaceChildren(...chats.map((chat) => {
+    const row = document.createElement("div");
+    row.className = "chat" + (chat.id === current ? " active" : "");
+    const title = document.createElement("span");
+    title.textContent = (chat.type === "group" ? "# " : "") + chat.title;
+    row.append(title);
+    if (chat.unread_count) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = chat.unread_count;
+      row.append(badge);
+    }
+    row.onclick = () => openChat(chat.id);
+    return row;
+  }));
+}
+
+function renderMessage(message, isPending = false) {
+  const el = document.createElement("div");
+  el.className = "msg" + (message.sender.id === me ? " mine" : "") + (isPending ? " pending" : "");
+  el.dataset.id = message.id ?? "";
+  const meta = document.createElement("small");
+  meta.textContent = message.sender.name + (message.created_at ? " · " + new Date(message.created_at).toLocaleTimeString() : "");
+  el.append(meta, document.createTextNode(message.text));
+  $("messages").append(el);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return el;
+}
+
+function hasMessage(id) {
+  return $("messages").querySelector(`[data-id="${id}"]`) !== null;
+}
+
+async function openChat(chatId) {
+  current = chatId;
+  $("messages").replaceChildren();
+  const page = await http("GET", `/chats/${chatId}/messages?limit=50`);
+  page.items.forEach((m) => renderMessage(m));
+  const last = page.items.at(-1);
+  if (last) ws.send(JSON.stringify({ type: "read", chat_id: chatId, message_id: last.id }));
+  await loadChats();
+}
+
+function onFrame(frame) {
+  log("←", frame);
+  if (frame.type === "message" || frame.type === "ack") {
+    const message = frame.message;
+    const optimistic = pending.get(message.client_msg_id);
+    if (optimistic) { optimistic.remove(); pending.delete(message.client_msg_id); }
+    if (message.chat_id === current && !hasMessage(message.id)) {
+      renderMessage(message);
+      if (message.sender.id !== me) ws.send(JSON.stringify({ type: "read", chat_id: current, message_id: message.id }));
+    }
+    loadChats();
+  } else if (frame.type === "read" || frame.type === "chat_created" || frame.type === "chat_removed") {
+    loadChats();
+  } else if (frame.type === "error") {
+    const optimistic = pending.get(frame.client_msg_id);
+    if (optimistic) { optimistic.textContent = "✗ " + frame.code; pending.delete(frame.client_msg_id); }
+  }
+}
+
+function connect() {
+  ws = new WebSocket(api.replace(/^http/, "ws") + "/api/v1/ws");
+  ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token }));
+  ws.onmessage = (event) => {
+    const frame = JSON.parse(event.data);
+    if (frame.type === "auth_ok") { me = frame.user_id; $("status").textContent = `в сети, user_id=${me}`; return; }
+    onFrame(frame);
+  };
+  ws.onclose = (event) => {
+    $("status").textContent = `соединение закрыто (${event.code}), переподключение…`;
+    log("×", { code: event.code });
+    setTimeout(async () => { connect(); if (current) await openChat(current); }, 2000);
+  };
+}
+
+setInterval(() => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: "ping" })), 25000);
+
+$("login").onsubmit = async (event) => {
+  event.preventDefault();
+  api = $("api").value.replace(/\/$/, "");
+  try {
+    token = (await http("POST", "/auth/login", { email: $("email").value, password: $("password").value })).access_token;
+    connect();
+    await loadChats();
+  } catch (error) {
+    $("status").textContent = "ошибка входа: " + error.message;
+  }
+};
+
+$("send").onsubmit = (event) => {
+  event.preventDefault();
+  const text = $("text").value;
+  if (!text.trim() || !current) return;
+  const clientMsgId = crypto.randomUUID();
+  pending.set(clientMsgId, renderMessage({ sender: { id: me, name: "я" }, text }, true));
+  const frame = { type: "send", chat_id: current, text, client_msg_id: clientMsgId };
+  log("→", frame);
+  ws.send(JSON.stringify(frame));
+  $("text").value = "";
+};
+</script>
+</body>
+</html>

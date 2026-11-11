@@ -25,7 +25,7 @@ async def recommend_people(
 async def like(
     user_id: TargetUserId, user: SurveyCompletedUser, service: MatchingServiceDep
 ) -> LikeOut:
-    """Одно нажатие создаёт пару. До интеграции chat_id всегда null."""
+    """Одно нажатие создаёт пару и личный чат; повтор возвращает тот же chat_id."""
     return await service.like(user.id, user_id)
 
 

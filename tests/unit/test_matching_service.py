@@ -16,13 +16,18 @@ from app.models import (
     UserAnswer,
 )
 from app.schemas.user import PublicIdentityOut
+from app.services.chat import ChatService
 from app.services.identity import IdentityService
 from app.services.matching import MatchingService
+from app.services.notifier import ChatCreated
 from app.services.survey import SurveyService
 from tests.fakes.repositories import (
+    FakeChatEventSink,
+    FakeChatRepository,
     FakeInterestRepository,
     FakeMatchRepository,
     FakeOfficeRepository,
+    FakeRateLimiter,
     FakeSurveyRepository,
     FakeUserRepository,
 )
@@ -36,6 +41,8 @@ class Context:
     surveys: FakeSurveyRepository
     matches: FakeMatchRepository
     identity: IdentityService
+    chats: FakeChatRepository
+    chat_events: FakeChatEventSink
 
 
 @pytest.fixture
@@ -63,13 +70,18 @@ def ctx(settings: Settings) -> Context:
     surveys = FakeSurveyRepository(users=users, interests=interests)
     identity = IdentityService(users, offices, settings)
     matches = FakeMatchRepository()
+    chats = FakeChatRepository()
+    chat_events = FakeChatEventSink()
+    chat = ChatService(chats, chat_events, FakeRateLimiter())
     return Context(
-        MatchingService(matches, SurveyService(surveys, interests, identity), identity),
+        MatchingService(matches, SurveyService(surveys, interests, identity), identity, chat),
         users,
         interests,
         surveys,
         matches,
         identity,
+        chats,
+        chat_events,
     )
 
 
@@ -161,7 +173,9 @@ async def test_one_like_connects_pair_without_accepting_for_peer(
     ctx: Context, actor: int, target: int, statuses: tuple[MatchStatus, MatchStatus]
 ) -> None:
     result = await ctx.service.like(actor, target)
-    assert result.model_dump() == {"matched": True, "chat_id": None}
+    assert result.model_dump() == {"matched": True, "chat_id": 1}
+    assert await ctx.chats.list_member_ids(1) == [1, 2]
+    assert ctx.chat_events.events == [ChatCreated(chat_id=1, user_ids=(1, 2))]
     (pair,) = ctx.matches.items
     assert (pair.user_a_id, pair.user_b_id) == (1, 2)
     assert (pair.a_status, pair.b_status) == statuses
@@ -239,21 +253,36 @@ async def test_invalid_action_does_not_create_pair(
         await getattr(ctx.service, action)(1, target)
     assert exc.value.code == code
     assert ctx.matches.items == []
+    assert ctx.chats.chats == {} and ctx.chat_events.events == []
 
 
-async def test_repeated_like_calls_chat_integration_for_existing_pair(
-    ctx: Context, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await ctx.service.like(1, 2)
+async def test_repeated_like_returns_same_chat_without_new_event(ctx: Context) -> None:
+    first = await ctx.service.like(1, 2)
+    again = await ctx.service.like(2, 1)
+    assert first.chat_id == again.chat_id
+    assert len(ctx.matches.items) == 1 and len(ctx.chats.chats) == 1
+    assert len(ctx.chat_events.events) == 1
 
-    async def integrated_chat(user_a: int, user_b: int) -> int:
-        assert (user_a, user_b) == (1, 2)
-        return 42
 
-    monkeypatch.setattr(ctx.service, "_ensure_direct_chat", integrated_chat)
+async def test_like_creates_missing_chat_for_existing_pair(ctx: Context) -> None:
+    # пара из времени до интеграции с chat: accepted есть, чата нет
+    ctx.matches.items.append(
+        Match(
+            id=1,
+            user_a_id=1,
+            user_b_id=2,
+            score=1.15,
+            a_status=MatchStatus.ACCEPTED,
+            b_status=MatchStatus.PENDING,
+        )
+    )
     result = await ctx.service.like(2, 1)
-    assert result.model_dump() == {"matched": True, "chat_id": 42}
-    assert len(ctx.matches.items) == 1
+    assert result.chat_id == 1
+    assert ctx.chats.chats[1].direct_key == "1:2"
+    assert (ctx.matches.items[0].a_status, ctx.matches.items[0].b_status) == (
+        MatchStatus.ACCEPTED,
+        MatchStatus.PENDING,
+    )
 
 
 async def test_public_details_only_active_text_and_approved_leaves(ctx: Context) -> None:

@@ -101,12 +101,20 @@ async def test_onboarding_recommendations_profile_changes_and_pair(
             auth.append(headers)
             ids.append((await client.get("/api/v1/me", headers=headers)).json()["id"])
         survey = (await client.get("/api/v1/survey", headers=auth[0])).json()
+        # анкета v2 условная: отвечаем только на вопросы, видимые при выбранных вариантах
+        questions = {q["code"]: q for q in survey}
+        options = {(q["code"], o["text"]): o["id"] for q in survey for o in q["options"]}
         answers = [
-            {"question_id": q["id"], "option_ids": [q["options"][0]["id"]]}
-            for q in survey
-            if q["type"] != "text"
+            {
+                "question_id": questions["v2_directions"]["id"],
+                "option_ids": [options[("v2_directions", "Спорт")]],
+            },
+            {
+                "question_id": questions["v2_sport"]["id"],
+                "option_ids": [options[("v2_sport", "Бег")]],
+            },
         ]
-        text_question = next(q for q in survey if q["type"] == "text")
+        text_question = questions["v2_about"]
         for headers in auth:
             response = await client.put(
                 "/api/v1/survey/answers",
@@ -114,7 +122,7 @@ async def test_onboarding_recommendations_profile_changes_and_pair(
                 json=answers
                 + [{"question_id": text_question["id"], "text_value": "Рисую акварелью"}],
             )
-            assert response.status_code == 200
+            assert response.status_code == 200, response.text
         response = await client.get(PATH, headers=auth[0])
         assert response.status_code == 200
         result = response.json()
@@ -139,11 +147,11 @@ async def test_onboarding_recommendations_profile_changes_and_pair(
         result = (await client.get(PATH, headers=auth[0])).json()
         assert result[0]["score"] == 1.05 and result[0]["same_office"] is False
         # Changing the selected leaf removes the candidate: city alone does not qualify.
-        multi = next(q for q in survey if q["type"] == "multi")
+        sport = questions["v2_sport"]
         changed = [
             a
-            if a["question_id"] != multi["id"]
-            else {"question_id": multi["id"], "option_ids": [multi["options"][1]["id"]]}
+            if a["question_id"] != sport["id"]
+            else {"question_id": sport["id"], "option_ids": [options[("v2_sport", "Волейбол")]]}
             for a in answers
         ]
         response = await client.put("/api/v1/survey/answers", headers=auth[1], json=changed)
@@ -165,7 +173,8 @@ async def test_onboarding_recommendations_profile_changes_and_pair(
             assert await session.scalar(select(func.count()).select_from(Match)) == 0
         response = await client.post(f"/api/v1/matches/{ids[1]}/like", headers=auth[0])
         assert response.status_code == 200
-        assert response.json() == {"matched": True, "chat_id": None}
+        assert response.json()["matched"] is True
+        assert isinstance(response.json()["chat_id"], int)
         for headers in auth:
             assert (await client.get(PATH, headers=headers)).json() == []
     async with pg_factory() as session:

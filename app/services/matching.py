@@ -4,6 +4,7 @@ from app.repositories.interfaces import MatchRepository
 from app.schemas.matching import LikeOut, PersonRecommendationOut
 from app.schemas.survey import MatchingProfile
 from app.schemas.user import PublicProfile
+from app.services.chat import ChatService
 from app.services.identity import IdentityService
 from app.services.survey import SurveyService
 
@@ -26,11 +27,16 @@ def score(a: MatchingProfile, b: MatchingProfile) -> float:
 
 class MatchingService:
     def __init__(
-        self, matches: MatchRepository, survey: SurveyService, identity: IdentityService
+        self,
+        matches: MatchRepository,
+        survey: SurveyService,
+        identity: IdentityService,
+        chat: ChatService,
     ) -> None:
         self._matches = matches
         self._survey = survey
         self._identity = identity
+        self._chat = chat
 
     async def like(self, user_id: int, target_id: int) -> LikeOut:
         await self._validate_target(user_id, target_id)
@@ -44,8 +50,9 @@ class MatchingService:
                 pair.a_status = MatchStatus.ACCEPTED
             else:
                 pair.b_status = MatchStatus.ACCEPTED
-        # В том числе при повторе: после интеграции создаст недостающий чат.
-        chat_id = await self._ensure_direct_chat(pair.user_a_id, pair.user_b_id)
+        # В той же транзакции, что и пара. При повторе создаст чат, если его ещё нет;
+        # chat_created уйдёт обоим только после commit.
+        chat_id = await self._chat.ensure_direct_chat(pair.user_a_id, pair.user_b_id)
         return LikeOut(chat_id=chat_id)
 
     async def skip(self, user_id: int, target_id: int) -> None:
@@ -63,12 +70,6 @@ class MatchingService:
             raise DomainValidationError("cannot_match_self", "Нельзя создать пару с самим собой")
         if not await self._identity.has_completed_survey(target_id):
             raise ConflictError("target_survey_required", "Пользователь ещё не заполнил анкету")
-
-    async def _ensure_direct_chat(self, user_a: int, user_b: int) -> int | None:
-        """Временная заглушка до подключения модуля chat."""
-        # TODO(chat): внедрить ChatService через DI с той же SessionDep.
-        # return await self._chat.ensure_direct_chat(user_a, user_b)
-        return None
 
     async def recommend_people(self, user_id: int, limit: int) -> list[PersonRecommendationOut]:
         excluded = await self._matches.excluded_user_ids(user_id)
