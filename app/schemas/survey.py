@@ -49,8 +49,22 @@ class InterestDirectionOut(InterestOut):
 
 class MatchingProfile(BaseModel):
     interest_ids: set[int]
+    category_ids: set[int] = Field(default_factory=set)
     office_id: int
     city: str
+
+
+class MatchingInterests(BaseModel):
+    interests: list[InterestOut]
+    categories: list[InterestOut]
+
+    def to_profile(self, office_id: int, city: str) -> MatchingProfile:
+        return MatchingProfile(
+            interest_ids={interest.id for interest in self.interests},
+            category_ids={category.id for category in self.categories},
+            office_id=office_id,
+            city=city,
+        )
 
 
 class FreeAnswerOut(BaseModel):

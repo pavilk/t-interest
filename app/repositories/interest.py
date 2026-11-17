@@ -1,10 +1,21 @@
 from collections.abc import Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import Subquery, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models import Interest, UserInterest
+
+
+def approved_user_leaves() -> Subquery:
+    root = aliased(Interest)
+    return (
+        select(UserInterest.user_id, Interest.id.label("interest_id"))
+        .join(Interest, UserInterest.interest_id == Interest.id)
+        .join(root, Interest.parent_id == root.id)
+        .where(Interest.is_approved, root.is_approved, root.parent_id.is_(None))
+        .subquery()
+    )
 
 
 class SqlInterestRepository:
@@ -26,18 +37,8 @@ class SqlInterestRepository:
         await self._session.flush()
 
     async def get_user_interest_ids(self, user_ids: Sequence[int]) -> dict[int, set[int]]:
-        root = aliased(Interest)
-        rows = await self._session.execute(
-            select(UserInterest.user_id, UserInterest.interest_id)
-            .join(Interest, UserInterest.interest_id == Interest.id)
-            .join(root, Interest.parent_id == root.id)
-            .where(
-                UserInterest.user_id.in_(user_ids),
-                Interest.is_approved,
-                root.is_approved,
-                root.parent_id.is_(None),
-            )
-        )
+        leaves = approved_user_leaves()
+        rows = await self._session.execute(select(leaves).where(leaves.c.user_id.in_(user_ids)))
         result = {user_id: set[int]() for user_id in user_ids}
         for user_id, interest_id in rows:
             result[user_id].add(interest_id)

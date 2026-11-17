@@ -64,7 +64,13 @@ class SqlSeedRepository:
         return question
 
     async def ensure_option(
-        self, question_id: int, text: str, order: int, interest_id: int | None
+        self,
+        question_id: int,
+        text: str,
+        order: int,
+        interest_id: int | None,
+        *,
+        category_interest_id: int | None = None,
     ) -> AnswerOption:
         option = await self._session.scalar(
             select(AnswerOption).where(
@@ -73,7 +79,11 @@ class SqlSeedRepository:
         )
         if option is None:
             option = AnswerOption(
-                question_id=question_id, text=text, order=order, interest_id=interest_id
+                question_id=question_id,
+                text=text,
+                order=order,
+                interest_id=interest_id,
+                category_interest_id=category_interest_id,
             )
             self._session.add(option)
             await self._session.flush()

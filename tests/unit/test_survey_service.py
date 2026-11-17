@@ -57,6 +57,14 @@ async def ctx(settings: Settings) -> Context:
         )
     )
     offices = FakeOfficeRepository([Office(id=1, city="Тестовый город", name="Офис")])
+    interests = FakeInterestRepository(
+        [
+            Interest(id=10, name="Спорт", parent_id=None, is_approved=True),
+            Interest(id=11, name="Бег", parent_id=10, is_approved=True),
+            Interest(id=12, name="Плавание", parent_id=10, is_approved=True),
+            Interest(id=13, name="Скрытый", parent_id=10, is_approved=False),
+        ]
+    )
     surveys = FakeSurveyRepository(
         questions=[
             Question(id=1, text="Single", type=QuestionType.SINGLE, order=1, is_active=True),
@@ -70,14 +78,7 @@ async def ctx(settings: Settings) -> Context:
             AnswerOption(id=3, question_id=2, text="C", order=1, interest_id=11),
             AnswerOption(id=4, question_id=2, text="D", order=2, interest_id=None),
         ],
-    )
-    interests = FakeInterestRepository(
-        [
-            Interest(id=10, name="Спорт", parent_id=None, is_approved=True),
-            Interest(id=11, name="Бег", parent_id=10, is_approved=True),
-            Interest(id=12, name="Плавание", parent_id=10, is_approved=True),
-            Interest(id=13, name="Скрытый", parent_id=10, is_approved=False),
-        ]
+        interests=interests,
     )
     return Context(
         SurveyService(surveys, interests, IdentityService(users, offices, settings)),

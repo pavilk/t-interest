@@ -111,13 +111,13 @@ async def test_candidate_eligibility_and_approved_tree(
     async with pg_data() as session:
         repo = SqlSurveyRepository(session)
         # Same office OR an approved common leaf; neither city alone nor invalid trees.
-        ids = await repo.list_matching_candidate_ids({10, 11, 12, 13, 21, 22}, 1, {1}, 500)
-        assert list(ids) == [2, 3]
-        assert list(await repo.list_matching_candidate_ids(set(), 1, {1}, 500)) == [2]
-        assert list(await repo.list_matching_candidate_ids({11}, 1, {1, 2, 3}, 500)) == []
+        ids = await repo.list_matching_candidate_ids({10, 11, 12, 13, 21, 22}, set(), 1, {1}, 500)
+        assert list(ids) == [3, 2]
+        assert list(await repo.list_matching_candidate_ids(set(), set(), 1, {1}, 500)) == [2]
+        assert list(await repo.list_matching_candidate_ids({11}, set(), 1, {1, 2, 3}, 500)) == []
 
 
-async def test_candidate_cap_applied_after_exclusions_in_id_order(
+async def test_candidate_cap_prioritizes_exact_interests_after_exclusions(
     pg_data: async_sessionmaker[AsyncSession],
 ) -> None:
     async with pg_data.begin() as session:
@@ -134,8 +134,10 @@ async def test_candidate_cap_applied_after_exclusions_in_id_order(
                 for i in range(3, 509)
             ]
         )
+        await session.flush()
+        session.add(UserInterest(user_id=508, interest_id=11))
     async with pg_data() as session:
         ids = await SqlSurveyRepository(session).list_matching_candidate_ids(
-            set(), 1, {1, 3, 4, 5}, 500
+            {11}, set(), 1, {1, 3, 4, 5}, 500
         )
-        assert list(ids) == list(range(6, 506))
+        assert list(ids) == [508, *range(6, 505)]

@@ -1,8 +1,7 @@
 from collections.abc import Sequence
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import Subquery, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.models import (
     AnswerOption,
@@ -11,8 +10,27 @@ from app.models import (
     QuestionType,
     User,
     UserAnswer,
-    UserInterest,
 )
+from app.repositories.interest import approved_user_leaves
+
+
+def _approved_user_categories() -> Subquery:
+    return (
+        select(UserAnswer.user_id, Interest.id.label("interest_id"))
+        .join(Question, Question.id == UserAnswer.question_id)
+        .join(
+            AnswerOption,
+            (AnswerOption.id == UserAnswer.option_id) & (AnswerOption.question_id == Question.id),
+        )
+        .join(Interest, Interest.id == AnswerOption.category_interest_id)
+        .where(
+            Question.code == "v2_directions",
+            Question.is_active,
+            Interest.is_approved,
+            Interest.parent_id.is_(None),
+        )
+        .subquery()
+    )
 
 
 class SqlSurveyRepository:
@@ -37,20 +55,23 @@ class SqlSurveyRepository:
         ).all()
 
     async def list_matching_candidate_ids(
-        self, interest_ids: set[int], office_id: int, excluded_user_ids: set[int], limit: int
+        self,
+        interest_ids: set[int],
+        category_ids: set[int],
+        office_id: int,
+        excluded_user_ids: set[int],
+        limit: int,
     ) -> Sequence[int]:
-        root = aliased(Interest)
+        leaves = approved_user_leaves()
+        categories = _approved_user_categories()
         common_interest = (
-            select(UserInterest.user_id)
-            .join(Interest, UserInterest.interest_id == Interest.id)
-            .join(root, Interest.parent_id == root.id)
-            .where(
-                UserInterest.user_id == User.id,
-                UserInterest.interest_id.in_(interest_ids),
-                Interest.is_approved,
-                root.is_approved,
-                root.parent_id.is_(None),
-            )
+            select(1)
+            .where(leaves.c.user_id == User.id, leaves.c.interest_id.in_(interest_ids))
+            .exists()
+        )
+        common_category = (
+            select(1)
+            .where(categories.c.user_id == User.id, categories.c.interest_id.in_(category_ids))
             .exists()
         )
         return (
@@ -59,12 +80,35 @@ class SqlSurveyRepository:
                 .where(
                     User.survey_completed,
                     User.id.not_in(excluded_user_ids),
-                    or_(User.office_id == office_id, common_interest),
+                    or_(common_interest, common_category, User.office_id == office_id),
                 )
-                .order_by(User.id)
+                .order_by(common_interest.desc(), User.id)
                 .limit(limit)
             )
         ).all()
+
+    async def get_user_matching_interests(
+        self, user_ids: Sequence[int]
+    ) -> dict[int, list[Interest]]:
+        if not user_ids:
+            return {}
+        leaves = approved_user_leaves()
+        categories = _approved_user_categories()
+        selected = (
+            select(leaves)
+            .where(leaves.c.user_id.in_(user_ids))
+            .union(select(categories).where(categories.c.user_id.in_(user_ids)))
+            .subquery()
+        )
+        rows = await self._session.execute(
+            select(selected.c.user_id, Interest).join(
+                Interest, Interest.id == selected.c.interest_id
+            )
+        )
+        result: dict[int, list[Interest]] = {user_id: [] for user_id in user_ids}
+        for user_id, interest in rows:
+            result[user_id].append(interest)
+        return result
 
     async def list_active_questions(self) -> Sequence[Question]:
         return (

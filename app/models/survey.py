@@ -95,6 +95,7 @@ class AnswerOption(Base):
     text: Mapped[str] = mapped_column(String(200))
     # выбор этого варианта даёт пользователю интерес
     interest_id: Mapped[int | None] = mapped_column(ForeignKey("interests.id"))
+    category_interest_id: Mapped[int | None] = mapped_column(ForeignKey("interests.id"))
     order: Mapped[int]
 
 
