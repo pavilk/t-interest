@@ -11,6 +11,8 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import Settings, get_settings
 from app.core.deps import (
+    get_chat_events,
+    get_chat_repository,
     get_interest_repository,
     get_match_repository,
     get_office_repository,
@@ -20,6 +22,8 @@ from app.core.deps import (
 from app.main import create_app
 from app.models import Office
 from tests.fakes.repositories import (
+    FakeChatEventSink,
+    FakeChatRepository,
     FakeInterestRepository,
     FakeMatchRepository,
     FakeOfficeRepository,
@@ -36,6 +40,16 @@ def users() -> FakeUserRepository:
 @pytest.fixture
 def offices() -> FakeOfficeRepository:
     return FakeOfficeRepository([Office(id=1, city="Екатеринбург", name="Офис на Ленина")])
+
+
+@pytest.fixture
+def chats() -> FakeChatRepository:
+    return FakeChatRepository()
+
+
+@pytest.fixture
+def chat_events() -> FakeChatEventSink:
+    return FakeChatEventSink()
 
 
 @pytest.fixture
@@ -57,6 +71,8 @@ def interests() -> FakeInterestRepository:
 async def client(
     users: FakeUserRepository,
     offices: FakeOfficeRepository,
+    chats: FakeChatRepository,
+    chat_events: FakeChatEventSink,
     settings: Settings,
     surveys: FakeSurveyRepository,
     interests: FakeInterestRepository,
@@ -65,6 +81,8 @@ async def client(
     app = create_app()
     app.dependency_overrides[get_user_repository] = lambda: users
     app.dependency_overrides[get_office_repository] = lambda: offices
+    app.dependency_overrides[get_chat_repository] = lambda: chats
+    app.dependency_overrides[get_chat_events] = lambda: chat_events
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_survey_repository] = lambda: surveys
     app.dependency_overrides[get_interest_repository] = lambda: interests

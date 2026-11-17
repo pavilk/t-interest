@@ -18,4 +18,4 @@ class PersonRecommendationOut(BaseModel):
 
 class LikeOut(BaseModel):
     matched: Literal[True] = True
-    chat_id: int | None = None
+    chat_id: int
