@@ -39,15 +39,20 @@
 > Обнови этот раздел, когда команды изменятся.
 
 ```bash
-docker compose up -d postgres        # поднять БД
+docker compose up -d --wait postgres # поднять БД (нужен POSTGRES_PASSWORD в .env)
 alembic upgrade head                 # применить миграции
 alembic revision --autogenerate -m "..."  # новая миграция (проверь сгенерированный файл руками)
 alembic downgrade -1                 # откатить последнюю миграцию
 alembic check                        # модели и миграции совпадают (перед PR)
-uvicorn app.main:app --reload        # запустить API локально
-pytest                               # все тесты
+uvicorn app.main:app --reload --ws-max-size 16384  # запустить API локально (лимит WS-фрейма 16 KB)
+pytest                               # unit- и API-тесты на фейках (маркер postgres исключён)
+docker compose --profile test up -d --wait postgres-test  # временная тестовая БД (порт TEST_POSTGRES_PORT, 5433)
+TEST_DATABASE_URL=postgresql+asyncpg://tinterest_test:tinterest_test@localhost:5433/tinterest_test pytest -m postgres  # тесты на PostgreSQL: схема на тест из миграций
+python -m seeds                      # справочники и анкета v2 (без пользователей)
 ruff check . && ruff format .        # линт и формат
 mypy                                 # проверка типов
+python -m seeds.demo_chat            # демо: 3 вымышленных пользователя, личный и групповой чат
+python -m http.server 5500 -d tools  # тестовая страница чата: http://localhost:5500/chat-demo.html
 ```
 
 Миграции берут `DATABASE_URL` из окружения, иначе из `.env`. Меняешь модели — в том же PR делай миграцию поверх текущей головы (`alembic heads` должен показывать одну).
@@ -115,17 +120,17 @@ docker-compose.yml
 - **Match**: id, user_a_id, user_b_id, score, a_status, b_status (pending / accepted / declined), created_at, updated_at. Всегда `user_a_id < user_b_id`, UNIQUE (user_a_id, user_b_id). Одного `accepted` достаточно для пары; `declined` — личный пропуск.
 - **Group**: id, name, description, interest_id, created_by, status (pending / approved / rejected), created_at. Пользователям видны только `approved`.
 - **GroupMember**: group_id, user_id, role (owner / member). PK (group_id, user_id).
-- **Chat**: id, type (direct / group), group_id?. Личный чат между двумя людьми только один.
-- **ChatMember**: chat_id, user_id, last_read_message_id?. PK (chat_id, user_id).
-- **Message**: id, chat_id, sender_id, text, created_at.
+- **Chat**: id, type (direct / group), group_id?, direct_key?. Личный чат между двумя людьми только один: `direct_key = "<min_id>:<max_id>"` (UNIQUE), у group он пустой (CHECK).
+- **ChatMember**: chat_id, user_id, last_read_message_id? (bigint, без FK, двигается только вперёд), joined_at. PK (chat_id, user_id), индекс (user_id).
+- **Message**: id (bigint), chat_id, sender_id, text, client_msg_id?, created_at. UNIQUE (sender_id, client_msg_id) — идемпотентная отправка. CHECK: текст не пустой после trim.
 
 Если схема в коде расходится с этим списком, обнови этот раздел.
 
 ## Матчинг (первая версия)
 
-- Реализованы рекомендации людей: `GET /api/v1/recommendations/people`, `limit` 1..20 (default 20), только после анкеты. Реакции и создание чата — следующий этап.
+- Реализованы рекомендации людей: `GET /api/v1/recommendations/people`, `limit` 1..20 (default 20), только после анкеты.
 - Отбор: первые 500 ID после исключений, с общим одобренным поднаправлением или тем же офисом; затем top-N по `(-score, user_id)`. Исключаются созданные пары (любой `accepted`) и собственные пропуски (`declined`); чужой пропуск не мешает.
-- `POST /matches/{user_id}/like` сразу создаёт пару и возвращает `{matched: true, chat_id: null}`. Chat пока заглушка с закомментированным вызовом `ensure_direct_chat`; интеграция отдельным этапом. Повторы не меняют статусы и score пары.
+- `POST /matches/{user_id}/like` сразу создаёт пару и личный чат (`ChatService.ensure_direct_chat` в той же транзакции) и возвращает `{matched: true, chat_id}`; `chat_created` уходит обоим после commit. Повторы не меняют статусы и score пары, возвращают тот же `chat_id` и создают чат, если его не было.
 - `POST /matches/{user_id}/skip` → `204`: личный пропуск, для созданной пары ничего не меняет. Like после пропуска разрешён. Оба пользователя должны заполнить анкету; общие интересы/офис для действия не обязательны.
 - Формула: Jaccard + 0.15 за офис либо 0.05 за город при разных офисах, округление до 3 знаков. Пустые интересы дают Jaccard 0, но бонус офиса сохраняется. Совпадение только города не включает кандидата в выдачу.
 - Простой и объяснимый скоринг: Jaccard по интересам пользователя (поднаправления) плюс бонус за совпадение офиса/города.
@@ -141,7 +146,7 @@ docker-compose.yml
 
 ## Чат (реалтайм)
 
-- JWT для WS передаётся при подключении (браузер не умеет ставить заголовки для WS). Способ выбирается вместе с вебом.
+- JWT для WS передаётся первым фреймом `{"type": "auth", "token"}` после подключения (браузер не умеет ставить заголовки для WS, а токен в URL попал бы в логи). Способ ещё нужно подтвердить с вебом. Соединение закрывается, когда истекает токен.
 - При каждом сообщении проверяется членство отправителя в чате.
 - Рассылка через менеджер соединений в памяти процесса, поэтому бэкенд запускается **одним воркером**. Если понадобится масштабирование — Postgres `LISTEN/NOTIFY`, без внешних брокеров.
 

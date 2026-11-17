@@ -18,27 +18,33 @@ mypy
 
 ## Что уже есть
 
-| Файл                                    | Что внутри                                                                                                        |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `app/core/config.py`                    | настройки из `.env`                                                                                               |
-| `app/core/db.py`                        | `get_session`: одна сессия на запрос, **единственное место с `commit`**                                           |
-| `app/core/errors.py`                    | доменные ошибки: `NotFoundError`, `ForbiddenError`, `ConflictError`, `DomainValidationError`, `UnauthorizedError` |
-| `app/core/security.py`                  | хэш паролей (argon2), JWT                                                                                         |
-| `app/models/`                           | **все** таблицы проекта, менять только вместе с CLAUDE.md                                                         |
-| `app/repositories/interfaces.py`        | интерфейсы репозиториев (Protocol)                                                                                |
-| `app/repositories/user.py`, `office.py` | образец репозитория                                                                                               |
-| `app/services/identity.py`              | образец сервиса                                                                                                   |
-| `app/schemas/`                          | Pydantic-схемы запросов и ответов; `errors.py` — формат ошибки                                                    |
-| `app/core/deps.py`                      | DI: сборка репозиториев и сервисов, `CurrentUser`, `SurveyCompletedUser`                                          |
-| `app/api/auth.py`, `app/api/me.py`      | **образец ручек**: `/auth/register`, `/auth/login`, `/auth/refresh`, `/me`, `/offices`                            |
-| `app/api/errors.py`                     | доменные ошибки → HTTP-коды и JSON `{"error": {"code", "message"}}`                                               |
-| `app/main.py`                           | приложение, подключение роутеров под `/api/v1`                                                                    |
-| `tests/fakes/repositories.py`           | фейковые репозитории в памяти                                                                                     |
-| `tests/unit/test_identity_service.py`   | образец тестов сервиса                                                                                            |
-| `tests/api/test_identity_api.py`        | образец тестов ручек (на фейках, без БД)                                                                          |
+| Файл | Что внутри |
+|---|---|
+| `app/core/config.py` | настройки из `.env` |
+| `app/core/db.py` | `session_scope` / `get_session`: одна сессия на запрос (в WS — на фрейм), **единственное место с `commit`**; outbox событий, которые уходят только после commit |
+| `app/core/errors.py` | доменные ошибки: `NotFoundError`, `ForbiddenError`, `ConflictError`, `DomainValidationError`, `UnauthorizedError`, `RateLimitedError` |
+| `app/core/security.py` | хэш паролей (argon2), JWT |
+| `app/models/` | **все** таблицы проекта, менять только вместе с CLAUDE.md |
+| `app/repositories/interfaces.py` | интерфейсы репозиториев (Protocol) |
+| `app/repositories/user.py`, `office.py` | образец репозитория |
+| `app/services/identity.py` | образец сервиса |
+| `app/schemas/` | Pydantic-схемы запросов и ответов; `errors.py` — формат ошибки |
+| `app/core/deps.py` | DI: сборка репозиториев и сервисов, `CurrentUser`, `SurveyCompletedUser` |
+| `app/api/auth.py`, `app/api/me.py` | **образец ручек**: `/auth/register`, `/auth/login`, `/auth/refresh`, `/me`, `/offices` |
+| `app/api/errors.py` | доменные ошибки → HTTP-коды и JSON `{"error": {"code", "message"}}` |
+| `app/main.py` | приложение, подключение роутеров под `/api/v1` |
+| `tests/fakes/repositories.py` | фейковые репозитории в памяти |
+| `tests/unit/test_identity_service.py` | образец тестов сервиса |
+| `tests/api/test_identity_api.py` | образец тестов ручек (на фейках, без БД) |
+| **chat** — готов | `repositories/chat.py`, `services/chat.py`, `api/chats.py` (REST), `api/ws.py` + `api/connections.py` (WebSocket). Для matching и groups: `ChatService.ensure_direct_chat`, `create_group_chat`, `add_group_member`, `remove_group_member` в той же сессии запроса |
+| `seeds/demo_chat.py`, `tools/chat-demo.html` | ручная проверка чата: демо-пользователи и страница на чистом JS (см. «Как потестить чат») |
+| `app/services/survey.py`, `app/services/matching.py` | анкета v2 и рекомендации людей, like/skip; like создаёт личный чат через `ChatService.ensure_direct_chat` |
+| `tests/repositories/`, `tests/api/*_postgres.py` | тесты на настоящей PostgreSQL (`pytest -m postgres`, см. «Проверки на PostgreSQL») |
 
-Миграции Alembic, справочники и модуль survey реализованы. Документация ручек:
-запусти `uvicorn app.main:app --reload` и открой http://localhost:8000/docs.
+
+Миграции Alembic, справочники, survey, matching и chat реализованы. Документация ручек:
+запусти `uvicorn app.main:app --reload` и открой http://localhost:8000/docs. Фреймы WebSocket
+описаны в `/openapi.json` как `ClientFrame` и `ServerFrame`.
 
 ## База данных и анкета
 
@@ -185,12 +191,10 @@ SQL отбирает пользователей с заполненной анк
 блокировка удерживается до завершения транзакции запроса. Score фиксируется при
 первом создании пары, при пропусках до создания пары равен `0`.
 
-Чат пока подключён заглушкой `MatchingService._ensure_direct_chat`: она возвращает
-`None`, реального чата и событий не создаёт. Рядом оставлен закомментированный вызов
-`ChatService.ensure_direct_chat(a, b)` для интеграции. При подключении передать
-ChatService через DI с той же сессией; создание чата должно выполняться и при повторном
-`like` существующей пары, в одной транзакции с matching. События — после commit.
-Отдельного `GET /matches` нет; после интеграции пары будут доступны через список чатов.
+`like` вызывает `ChatService.ensure_direct_chat(a, b)` на той же сессии запроса: пара и
+личный чат коммитятся одной транзакцией, `chat_created` уходит обоим после commit.
+Повторный `like` существующей пары возвращает тот же `chat_id` и создаёт чат, если его
+ещё не было. Отдельного `GET /matches` нет: пары видны через `GET /chats`.
 Рекомендации групп относятся к модулю groups.
 
 ## Проверки на PostgreSQL
@@ -210,8 +214,24 @@ Linux/macOS: `export TEST_DATABASE_URL=postgresql+asyncpg://tinterest_test:tinte
 Имя тестовой БД должно содержать `test`; она должна отличаться от рабочей. Каждый тест
 создаёт и удаляет только собственную случайную схему, применяя настоящие миграции.
 Проверяются ограничения PostgreSQL, round-trip миграций, два конкурентных PUT, ошибки
-после записи ответов и при commit, сквозное заполнение анкеты и повтор сидов. Явный запуск
+после записи ответов и при commit, сквозное заполнение анкеты и повтор сидов, гонки
+и outbox чата. Явный запуск
 `pytest -m postgres` без URL завершается ошибкой; пропуск не считается успешной проверкой.
+
+## Как потестить чат
+
+1. Подними базу и примени миграции, как в «База данных и анкета».
+2. `python -m seeds.demo_chat`: появятся Аня, Борис и Вера
+   (почты `anya@`, `boris@`, `vera@example.com`, пароль `demo-password-123`),
+   их личный чат и групповой «Волейбол».
+3. `uvicorn app.main:app --reload --ws-max-size 16384` в одном терминале,
+   `python -m http.server 5500 -d tools` в другом.
+4. Открой http://localhost:5500/chat-demo.html в двух вкладках, войди разными людьми и пиши.
+   Внизу страницы видны все WS-фреймы. REST можно трогать в http://localhost:8000/docs.
+
+Новый личный чат появляется после like (`POST /api/v1/matches/{user_id}/like`, оба с анкетой):
+ответ содержит `chat_id`, онлайн-участникам приходит `chat_created`. Групповые чаты
+пока только через сид — до модуля groups.
 
 ## Как добавить модуль: 7 шагов
 
@@ -298,7 +318,7 @@ SurveyServiceDep = Annotated[SurveyService, Depends(get_survey_service)]
 | Модуль                                | Репозиторий                                                                                                                                                          | Сервис и главные правила                                                                                                                                                      | Раздел ARCHITECTURE.md              |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | **survey — готов**                    | `SurveyRepository`: активные вопросы, варианты, замена активных ответов с сохранением истории. `InterestRepository`: дерево интересов, замена интересов пользователя | `SurveyService`: `get_survey`, `get_answers`, `submit_answers`, `list_interests`, `get_matching_profile(user_ids)`; модели и Protocol — образец для следующих модулей         | Contracts → survey                  |
-| **chat**                              | `ChatRepository`: `get_direct_by_key`, `add_chat`, `add_member`, `is_member`, `list_user_chats`, `add_message`, `list_messages(before_id, limit)`, `mark_read`       | `ChatService`: `ensure_direct_chat(a, b)` (ключ `"<min>:<max>"`, идемпотентно), `create_group_chat`, `send_message` (проверка членства, текст 1..4000), `list_chats` с unread | Contracts → chat                    |
-| **matching — люди и действия готовы** | `excluded_user_ids(user_id)`, `get_or_create_for_update(a, b)`; каноническая пара и блокировка строки                                                                | `recommend_people`, `like`, `skip`, чистые `jaccard`/`score`. Одного like достаточно; skip личный. Chat — заглушка до интеграции                                              | Contracts → matching, Decisions 4–5 |
+| **chat — готов**                      | `ChatRepository`                                                                                                                                                     | `ChatService`; для groups: `create_group_chat`, `add_group_member`, `remove_group_member` в той же сессии запроса                                                             | `.claude/plans/chat-realtime/`      |
+| **matching — люди и действия готовы** | `excluded_user_ids(user_id)`, `get_or_create_for_update(a, b)`; каноническая пара и блокировка строки                                                                | `recommend_people`, `like`, `skip`, чистые `jaccard`/`score`. Одного like достаточно; skip личный. Like создаёт личный чат                                                      | Contracts → matching, Decisions 4–5 |
 | **groups**                            | `GroupRepository`: `get`, `get_active_by_interest`, `add`, `list_pending`, `add_member`, `is_member`, `recommend_for_interests`                                      | `GroupService`: `create_request`, `approve`/`reject` (только moderator/admin), `join`, `leave`                                                                                | Contracts → groups                  |
 | **search**                            | `SearchRepository`: `ILIKE` по людям и одобренным группам                                                                                                            | `SearchService`: строка ≥ 2 символов, limit 20                                                                                                                                | Data flow → 6                       |
